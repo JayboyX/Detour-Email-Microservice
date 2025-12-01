@@ -1,64 +1,74 @@
 #!/usr/bin/env python3
 """
-Run script for Detour Email Verification Service
+Entry point for Detour Email Verification Service
+Exports 'app' for uvicorn
 """
-import subprocess
-import sys
 import os
+import sys
+from dotenv import load_dotenv
 
-def install_dependencies():
-    """Install Python dependencies"""
-    print("📦 Installing dependencies...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+# Load environment variables first
+load_dotenv()
 
+# Check for required environment variables
 def check_environment():
-    """Check if required environment variables are set"""
+    """Verify required environment variables are set"""
     required_vars = [
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_ROLE",
         "JWT_SECRET_KEY",
-        "SES_SENDER_EMAIL"
+        "SES_SENDER_EMAIL",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY"
     ]
     
     print("🔍 Checking environment variables...")
     missing_vars = []
     
     for var in required_vars:
-        if var not in os.environ:
+        value = os.getenv(var)
+        if not value:
             missing_vars.append(var)
     
     if missing_vars:
-        print(f"❌ Missing environment variables: {', '.join(missing_vars)}")
-        print("Please set them in your .env file or environment")
+        print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+        print("💡 Make sure they are set in App Runner's environment configuration")
         return False
     
-    print("✅ Environment variables are set")
+    print("✅ All environment variables are set")
     return True
 
-def run_server():
-    """Run the FastAPI server"""
-    print("🚀 Starting Detour Email Verification Service...")
-    subprocess.run([
-        sys.executable, "-m", "uvicorn",
-        "main:app",
-        "--host", "0.0.0.0",
-        "--port", "8000",
-        "--reload"
-    ])
+# Check environment BEFORE importing anything else
+if not check_environment():
+    sys.exit(1)
 
+# Now import and create the app
+from main import app as main_app
+
+# Re-export the app
+app = main_app
+
+# Startup script when run directly
 if __name__ == "__main__":
-    # Load environment variables from .env file
-    from dotenv import load_dotenv
-    load_dotenv()
+    import uvicorn
     
-    # Check environment
-    if not check_environment():
-        sys.exit(1)
+    print("=" * 60)
+    print("🚗 Detour Email Verification Service")
+    print("=" * 60)
+    print(f"📧 Email Sender: {os.getenv('SES_SENDER_EMAIL')}")
+    print(f"🔗 Supabase URL: {os.getenv('SUPABASE_URL')}")
+    print(f"🌐 API Base URL: {os.getenv('API_BASE_URL', 'http://localhost:8000')}")
+    print("=" * 60)
     
-    # Install dependencies if needed
-    if len(sys.argv) > 1 and sys.argv[1] == "--install":
-        install_dependencies()
+    port = int(os.getenv("PORT", "8000"))
     
-    # Run server
-    run_server()
+    print(f"🚀 Starting server on port {port}...")
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        reload=False
+    )

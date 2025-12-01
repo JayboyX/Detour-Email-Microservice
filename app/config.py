@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     
     # App
     app_scheme: str = "detourui"
-    api_base_url: str = "https://3a5ea9256115.ngrok-free.app"  # Added default
-    frontend_url: str = "https://3a5ea9256115.ngrok-free.app"   # Added default
+    api_base_url: str = "https://sjkixfkta8.us-east-1.awsapprunner.com"  # Added default
+    frontend_url: str = "https://sjkixfkta8.us-east-1.awsapprunner.com"   # Added default
     
     # Development
     debug: bool = False
