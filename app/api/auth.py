@@ -1,7 +1,7 @@
-# app/api/auth.py - UPDATE THE IMPORTS AND INITIALIZATION
+# app/api/auth.py - UPDATED WITH TIMEZONE FIX
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from typing import Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 
 from app.supabase_client import get_supabase
@@ -52,13 +52,13 @@ def signup(
         
         # Generate verification token
         verification_token = auth_service.create_verification_token(user.id, user.email)
-        expires_at = datetime.utcnow() + timedelta(hours=settings.verification_token_expire_hours)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.verification_token_expire_hours)
         
         # Save verification token to database
         db_service.set_verification_token(user.id, verification_token, expires_at)
         
-        # Create verification URL (deep link for mobile app)
-        verification_url = f"{settings.app_scheme}://verify-email?token={verification_token}"
+        # Create verification URL (HTTP URL for web browser)
+        verification_url = f"{settings.api_base_url}/verify-email?token={verification_token}"
         
         # Send verification email in background
         background_tasks.add_task(
@@ -131,7 +131,12 @@ def verify_email(
         if user.email_verified:
             return SuccessResponse(
                 success=True,
-                message="Email already verified"
+                message="Email already verified",
+                data={
+                    "user_id": user_id,
+                    "email": user.email,
+                    "already_verified": True
+                }
             )
         
         # Check if token matches and not expired
@@ -141,11 +146,18 @@ def verify_email(
                 message="Invalid verification token"
             )
         
-        if user.token_expires_at and user.token_expires_at < datetime.utcnow():
-            return SuccessResponse(
-                success=False,
-                message="Verification token has expired. Please request a new one."
-            )
+        # Fix timezone comparison
+        if user.token_expires_at:
+            # Ensure both datetimes are timezone-aware for comparison
+            expires_at = user.token_expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            
+            if expires_at < datetime.now(timezone.utc):
+                return SuccessResponse(
+                    success=False,
+                    message="Verification token has expired. Please request a new one."
+                )
         
         # Verify email
         success = db_service.verify_email(user_id)
@@ -156,7 +168,8 @@ def verify_email(
                 message="Email verified successfully! You can now log in to your account.",
                 data={
                     "user_id": user_id,
-                    "email": user.email
+                    "email": user.email,
+                    "verified": True
                 }
             )
         else:
@@ -200,13 +213,13 @@ def resend_verification(
         
         # Generate new verification token
         verification_token = auth_service.create_verification_token(user.id, user.email)
-        expires_at = datetime.utcnow() + timedelta(hours=settings.verification_token_expire_hours)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.verification_token_expire_hours)
         
         # Save new token
         db_service.set_verification_token(user.id, verification_token, expires_at)
         
-        # Create verification URL
-        verification_url = f"{settings.app_scheme}://verify-email?token={verification_token}"
+        # Create verification URL (HTTP URL for web browser)
+        verification_url = f"{settings.api_base_url}/verify-email?token={verification_token}"
         
         # Resend email in background
         background_tasks.add_task(
