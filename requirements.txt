@@ -1,4 +1,4 @@
-# Detour Email Verification Service
+# Detour Email Verification Service - FINAL WORKING VERSION
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-jose[cryptography]==3.3.0
@@ -10,7 +10,9 @@ python-multipart==0.0.6
 httpx==0.28.1
 email-validator==2.1.1
 
-# Comment out conflicting packages - use system versions
-# boto3  # Provided by App Runner environment
-# requests  # Provided by App Runner environment
-# botocore  # Provided by App Runner environment
+# REQUIRED - App Runner doesn't provide these by default
+requests>=2.31.0
+
+# OPTIONAL - Let App Runner handle AWS packages
+# boto3  # App Runner's IAM role handles AWS auth
+# botocore  # Comes with boto3 if needed
