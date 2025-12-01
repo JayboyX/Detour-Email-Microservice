@@ -16,3 +16,4 @@ charset-normalizer==3.3.2
 idna==3.6
 boto3==1.34.0  # <-- ADD THIS LINE
 botocore==1.34.162  # <-- ADD THIS LINE
+bcrypt==4.0.1
