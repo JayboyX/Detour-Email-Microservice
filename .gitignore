@@ -1,0 +1,52 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.sqlite3
+
+# ---- Virtual Environment ----
+venv/
+env/
+ENV/
+.venv/
+
+# ---- Environment Variables ----
+.env
+.env.* 
+
+# ---- Logs ----
+*.log
+logs/
+email_debug.log
+email_log.json
+
+# ---- Cache / Build ----
+*.egg-info/
+*.egg
+.eggs/
+.build/
+dist/
+build/
+
+# ---- IDE / Editor ----
+.vscode/
+.idea/
+*.swp
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+
+# ---- Python tools ----
+pip-wheel-metadata/
+pytest_cache/
+.coverage
+.cache/
+
+# ---- Project Specific ----
+email_preview.html
+test_credentials.py
+test_email_service.py
+check_iam_permissions.py
