@@ -15,6 +15,8 @@ class DatabaseService:
         self.supabase = supabase_client
         self.auth_service = auth_service
     
+    # We DO Email things here
+
     def create_user(self, user_data: Dict[str, Any]) -> Optional[UserInDB]:
         """Create a new user in Supabase"""
         try:
@@ -120,13 +122,20 @@ class DatabaseService:
             logger.error(f"Error checking email existence: {e}")
             return False
         
+
+    # We DO SMS things here
+    
     def get_kyc_by_user_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get KYC information for user"""
         try:
-            # Assuming you have a REST endpoint for kyc_information
             endpoint = f"/rest/v1/kyc_information?user_id=eq.{user_id}"
-            response = self.supabase.make_request("GET", endpoint, headers=self.supabase.anon_headers)
-            return response[0] if response else None
+            headers = self.supabase.anon_headers
+            response = self.supabase.make_request("GET", endpoint, headers=headers)
+            
+            if response and isinstance(response, list) and len(response) > 0:
+                return response[0]
+            return None
+            
         except Exception as e:
             logger.error(f"Error getting KYC: {e}")
             return None
@@ -146,7 +155,8 @@ class DatabaseService:
                     processed_updates[key] = value
             
             response = self.supabase.make_request("PATCH", endpoint, processed_updates, headers)
-            return response is not None
+            return response is not None and len(response) > 0
+            
         except Exception as e:
             logger.error(f"Error updating KYC: {e}")
             return False
@@ -161,34 +171,49 @@ class DatabaseService:
         })
     
     def verify_phone_otp(self, user_id: str, otp_code: str) -> Dict[str, Any]:
-        """Verify phone OTP"""
+        """Verify phone OTP - FIXED"""
         try:
+            # Import otp_service here to avoid circular imports
+            from app.otp_service import otp_service
+            
             # Get current KYC info
             kyc_info = self.get_kyc_by_user_id(user_id)
             if not kyc_info:
-                return {"success": False, "error": "KYC information not found"}
+                return {
+                    "success": False, 
+                    "error": "KYC information not found. Please complete KYC first.",
+                    "user_id": user_id
+                }
             
             # Check if already verified
             if kyc_info.get('phone_verified'):
-                return {"success": True, "already_verified": True}
+                return {
+                    "success": True, 
+                    "already_verified": True,
+                    "user_id": user_id
+                }
             
             # Check attempts
             attempts = kyc_info.get('phone_otp_attempts', 0)
             if attempts >= settings.otp_max_attempts:
-                return {"success": False, "error": "Too many attempts. Please request a new OTP."}
+                return {
+                    "success": False, 
+                    "error": "Too many attempts. Please request a new OTP.",
+                    "user_id": user_id
+                }
             
             # Get stored OTP and expiry
             stored_otp = kyc_info.get('phone_verification_otp')
             stored_expiry = kyc_info.get('phone_otp_expires_at')
             
             if not stored_otp or not stored_expiry:
-                return {"success": False, "error": "No OTP found. Please request a new one."}
+                return {
+                    "success": False, 
+                    "error": "No OTP found. Please request a new one.",
+                    "user_id": user_id
+                }
             
-            # Parse expiry datetime
-            if isinstance(stored_expiry, str):
-                stored_expiry = datetime.fromisoformat(stored_expiry.replace('Z', '+00:00'))
-            
-            # Verify OTP
+            # Verify OTP using otp_service
             if otp_service.is_otp_valid(stored_otp, stored_expiry, otp_code):
                 # Mark phone as verified
                 success = self.update_kyc_phone_verification(user_id, {
@@ -199,9 +224,17 @@ class DatabaseService:
                 })
                 
                 if success:
-                    return {"success": True, "verified": True}
+                    return {
+                        "success": True, 
+                        "verified": True,
+                        "user_id": user_id
+                    }
                 else:
-                    return {"success": False, "error": "Failed to update verification status"}
+                    return {
+                        "success": False, 
+                        "error": "Failed to update verification status",
+                        "user_id": user_id
+                    }
             else:
                 # Increment attempt counter
                 self.update_kyc_phone_verification(user_id, {
@@ -209,12 +242,21 @@ class DatabaseService:
                 })
                 
                 remaining_attempts = settings.otp_max_attempts - (attempts + 1)
+                error_msg = "Invalid OTP code"
+                if remaining_attempts <= 0:
+                    error_msg = "Too many failed attempts. Please request a new OTP."
+                
                 return {
                     "success": False, 
-                    "error": "Invalid OTP",
-                    "remaining_attempts": remaining_attempts
+                    "error": error_msg,
+                    "remaining_attempts": remaining_attempts,
+                    "user_id": user_id
                 }
                 
         except Exception as e:
             logger.error(f"Error verifying OTP: {e}")
-            return {"success": False, "error": f"Verification failed: {str(e)}"}
+            return {
+                "success": False, 
+                "error": f"Verification failed: {str(e)}",
+                "user_id": user_id
+            }

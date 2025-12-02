@@ -1,5 +1,5 @@
 # app/api/auth.py - UPDATED WITH TIMEZONE FIX
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, logger, status, BackgroundTasks
 from typing import Dict, Any
 from datetime import datetime, timedelta, timezone
 import uuid
@@ -23,6 +23,8 @@ router = APIRouter()
 # Initialize services
 auth_service = AuthService()
 email_service = EmailService()
+
+# We do Email things below here
 
 @router.post("/signup", response_model=SuccessResponse, status_code=status.HTTP_201_CREATED)
 def signup(
@@ -341,6 +343,7 @@ def check_verification(
             message=f"Check failed: {str(e)}"
         )
     
+    # We Do SMS things below here
     
 @router.post("/send-phone-otp", response_model=SuccessResponse)
 def send_phone_otp(
@@ -348,7 +351,7 @@ def send_phone_otp(
     background_tasks: BackgroundTasks,
     supabase=Depends(get_supabase)
 ):
-    """Send OTP to phone number for verification"""
+    """Send OTP to phone number for verification - FIXED"""
     try:
         # Initialize services
         db_service = DatabaseService(supabase, auth_service)
@@ -358,7 +361,8 @@ def send_phone_otp(
         if not user:
             return SuccessResponse(
                 success=False,
-                message="User not found"
+                message="User not found",
+                data={"user_id": request.user_id}
             )
         
         # Get KYC info
@@ -366,7 +370,8 @@ def send_phone_otp(
         if not kyc_info:
             return SuccessResponse(
                 success=False,
-                message="KYC information not found. Please complete KYC first."
+                message="KYC information not found. Please complete KYC first.",
+                data={"user_id": request.user_id}
             )
         
         # Check if phone is already verified
@@ -374,19 +379,21 @@ def send_phone_otp(
             return SuccessResponse(
                 success=True,
                 message="Phone already verified",
-                data={"already_verified": True}
+                data={
+                    "already_verified": True,
+                    "user_id": request.user_id
+                }
             )
         
         # Check resend delay
         last_sent = kyc_info.get('phone_otp_last_sent')
-        if last_sent and isinstance(last_sent, str):
-            last_sent = datetime.fromisoformat(last_sent.replace('Z', '+00:00'))
-        
-        if not otp_service.can_resend_otp(last_sent):
-            return SuccessResponse(
-                success=False,
-                message="Please wait before requesting a new OTP"
-            )
+        if last_sent:
+            if not otp_service.can_resend_otp(last_sent):
+                return SuccessResponse(
+                    success=False,
+                    message="Please wait 60 seconds before requesting a new OTP",
+                    data={"user_id": request.user_id}
+                )
         
         # Generate OTP
         otp_code = otp_service.generate_otp()
@@ -397,7 +404,8 @@ def send_phone_otp(
         if not success:
             return SuccessResponse(
                 success=False,
-                message="Failed to generate OTP"
+                message="Failed to generate OTP",
+                data={"user_id": request.user_id}
             )
         
         # Send SMS in background
@@ -413,14 +421,18 @@ def send_phone_otp(
             message=f"OTP sent to {request.phone_number}",
             data={
                 "expires_in_minutes": settings.otp_expiry_minutes,
-                "user_id": request.user_id
+                "user_id": request.user_id,
+                "phone_number": request.phone_number,
+                "simulated": sms_service.initialized and not settings.debug
             }
         )
         
     except Exception as e:
+        logger.error(f"Failed to send OTP: {e}")
         return SuccessResponse(
             success=False,
-            message=f"Failed to send OTP: {str(e)}"
+            message=f"Failed to send OTP: {str(e)}",
+            data={"user_id": request.user_id}
         )
 
 @router.post("/verify-phone-otp", response_model=SuccessResponse)
@@ -428,7 +440,7 @@ def verify_phone_otp(
     request: VerifyOTPRequest,
     supabase=Depends(get_supabase)
 ):
-    """Verify phone OTP"""
+    """Verify phone OTP - FIXED"""
     try:
         db_service = DatabaseService(supabase, auth_service)
         
@@ -438,54 +450,54 @@ def verify_phone_otp(
         if result.get("success"):
             return SuccessResponse(
                 success=True,
-                message="Phone number verified successfully",
-                data={"verified": True}
+                message="Phone number verified successfully!",
+                data={
+                    "verified": result.get("verified", True),
+                    "already_verified": result.get("already_verified", False),
+                    "user_id": request.user_id
+                }
             )
         else:
             return SuccessResponse(
                 success=False,
                 message=result.get("error", "Verification failed"),
+                data={
+                    "remaining_attempts": result.get("remaining_attempts"),
+                    "user_id": request.user_id
+                }
+            )
+            
+    except Exception as e:
+        logger.error(f"Verification failed: {e}")
+        return SuccessResponse(
+            success=False,
+            message=f"Verification failed: {str(e)}",
+            data={"user_id": request.user_id}
+        )
+    
+    # We do Test SMS things below here
+
+@router.get("/test-sms-connection", response_model=SuccessResponse)
+def test_sms_connection():
+    """Test SMS service connection"""
+    try:
+        result = sms_service.test_connection()
+        
+        if result.get("success"):
+            return SuccessResponse(
+                success=True,
+                message="SMS service is connected and working",
+                data=result
+            )
+        else:
+            return SuccessResponse(
+                success=False,
+                message=f"SMS service test failed: {result.get('error')}",
                 data=result
             )
             
     except Exception as e:
         return SuccessResponse(
             success=False,
-            message=f"Verification failed: {str(e)}"
-        )
-
-@router.get("/check-phone-verification/{user_id}", response_model=SuccessResponse)
-def check_phone_verification(
-    user_id: str,
-    supabase=Depends(get_supabase)
-):
-    """Check phone verification status"""
-    try:
-        db_service = DatabaseService(supabase, auth_service)
-        
-        # Get KYC info
-        kyc_info = db_service.get_kyc_by_user_id(user_id)
-        if not kyc_info:
-            return SuccessResponse(
-                success=False,
-                message="KYC information not found"
-            )
-        
-        phone_verified = kyc_info.get('phone_verified', False)
-        phone_number = kyc_info.get('phone_number')
-        
-        return SuccessResponse(
-            success=True,
-            message="Verification status retrieved",
-            data={
-                "phone_verified": phone_verified,
-                "phone_number": phone_number,
-                "user_id": user_id
-            }
-        )
-        
-    except Exception as e:
-        return SuccessResponse(
-            success=False,
-            message=f"Check failed: {str(e)}"
+            message=f"SMS test failed: {str(e)}"
         )
