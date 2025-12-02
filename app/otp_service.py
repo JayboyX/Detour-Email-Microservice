@@ -6,6 +6,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 import logging
+from app.config import settings  # Missing import!
 
 logger = logging.getLogger(__name__)
 

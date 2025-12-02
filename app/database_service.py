@@ -1,9 +1,11 @@
 # app/database_service.py - UPDATED
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
+from app import otp_service
 from app.models import UserInDB
 from app.auth_service import AuthService
+from app.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
