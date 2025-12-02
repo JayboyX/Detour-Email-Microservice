@@ -117,3 +117,102 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error checking email existence: {e}")
             return False
+        
+    def get_kyc_by_user_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get KYC information for user"""
+        try:
+            # Assuming you have a REST endpoint for kyc_information
+            endpoint = f"/rest/v1/kyc_information?user_id=eq.{user_id}"
+            response = self.supabase.make_request("GET", endpoint, headers=self.supabase.anon_headers)
+            return response[0] if response else None
+        except Exception as e:
+            logger.error(f"Error getting KYC: {e}")
+            return None
+    
+    def update_kyc_phone_verification(self, user_id: str, updates: Dict[str, Any]) -> bool:
+        """Update phone verification fields in KYC"""
+        try:
+            endpoint = f"/rest/v1/kyc_information?user_id=eq.{user_id}"
+            headers = self.supabase.service_headers
+            
+            # Process datetime values
+            processed_updates = {}
+            for key, value in updates.items():
+                if isinstance(value, datetime):
+                    processed_updates[key] = value.isoformat()
+                else:
+                    processed_updates[key] = value
+            
+            response = self.supabase.make_request("PATCH", endpoint, processed_updates, headers)
+            return response is not None
+        except Exception as e:
+            logger.error(f"Error updating KYC: {e}")
+            return False
+    
+    def set_phone_otp(self, user_id: str, otp_code: str, expires_at: datetime) -> bool:
+        """Set OTP for phone verification"""
+        return self.update_kyc_phone_verification(user_id, {
+            'phone_verification_otp': otp_code,
+            'phone_otp_expires_at': expires_at.isoformat(),
+            'phone_otp_last_sent': datetime.now(timezone.utc).isoformat(),
+            'phone_otp_attempts': 0
+        })
+    
+    def verify_phone_otp(self, user_id: str, otp_code: str) -> Dict[str, Any]:
+        """Verify phone OTP"""
+        try:
+            # Get current KYC info
+            kyc_info = self.get_kyc_by_user_id(user_id)
+            if not kyc_info:
+                return {"success": False, "error": "KYC information not found"}
+            
+            # Check if already verified
+            if kyc_info.get('phone_verified'):
+                return {"success": True, "already_verified": True}
+            
+            # Check attempts
+            attempts = kyc_info.get('phone_otp_attempts', 0)
+            if attempts >= settings.otp_max_attempts:
+                return {"success": False, "error": "Too many attempts. Please request a new OTP."}
+            
+            # Get stored OTP and expiry
+            stored_otp = kyc_info.get('phone_verification_otp')
+            stored_expiry = kyc_info.get('phone_otp_expires_at')
+            
+            if not stored_otp or not stored_expiry:
+                return {"success": False, "error": "No OTP found. Please request a new one."}
+            
+            # Parse expiry datetime
+            if isinstance(stored_expiry, str):
+                stored_expiry = datetime.fromisoformat(stored_expiry.replace('Z', '+00:00'))
+            
+            # Verify OTP
+            if otp_service.is_otp_valid(stored_otp, stored_expiry, otp_code):
+                # Mark phone as verified
+                success = self.update_kyc_phone_verification(user_id, {
+                    'phone_verified': True,
+                    'phone_verification_otp': None,
+                    'phone_otp_expires_at': None,
+                    'phone_otp_attempts': 0
+                })
+                
+                if success:
+                    return {"success": True, "verified": True}
+                else:
+                    return {"success": False, "error": "Failed to update verification status"}
+            else:
+                # Increment attempt counter
+                self.update_kyc_phone_verification(user_id, {
+                    'phone_otp_attempts': attempts + 1
+                })
+                
+                remaining_attempts = settings.otp_max_attempts - (attempts + 1)
+                return {
+                    "success": False, 
+                    "error": "Invalid OTP",
+                    "remaining_attempts": remaining_attempts
+                }
+                
+        except Exception as e:
+            logger.error(f"Error verifying OTP: {e}")
+            return {"success": False, "error": f"Verification failed: {str(e)}"}
