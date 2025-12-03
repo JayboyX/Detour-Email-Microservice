@@ -154,11 +154,52 @@ class EmailService:
         html_body = self._create_wallet_welcome_html(user_name, wallet_number)
         text_body = self._create_wallet_welcome_text(user_name, wallet_number)
         
+        # ADD LOGGING HERE
+        logger.info(f"📧 Attempting to send wallet welcome email to: {email}")
+        logger.info(f"   User: {user_name}, Wallet: {wallet_number}")
+        
         if self.has_ses_permissions and not settings.debug:
-            return self._send_via_ses(email, subject, html_body, text_body)
+            logger.info("📤 Using AWS SES for email delivery")
+            # You need to create the _send_custom_via_ses method first
+            return self._send_custom_via_ses(email, subject, html_body, text_body)
         else:
-            return self._debug_send_custom(email, subject, "Wallet Welcome Email")
-
+            logger.info("🐛 DEBUG MODE: Email not actually sent (simulated)")
+            # Print to console for debugging
+            print(f"\n{'='*60}")
+            print(f"📧 WALLET WELCOME EMAIL (DEBUG MODE)")
+            print(f"   To: {email}")
+            print(f"   Subject: {subject}")
+            print(f"   User: {user_name}")
+            print(f"   Wallet: {wallet_number}")
+            print(f"{'='*60}\n")
+            return True  # Return True for debug mode
+    
+    def _send_custom_via_ses(self, email: str, subject: str, html_body: str, text_body: str) -> bool:
+        """Send custom email via AWS SES"""
+        logger.info(f"📤 Sending custom email via SES to {email}")
+        
+        try:
+            response = self.ses_client.send_email(
+                Source=self.sender_email,
+                Destination={'ToAddresses': [email]},
+                Message={
+                    'Subject': {'Charset': 'UTF-8', 'Data': subject},
+                    'Body': {
+                        'Html': {'Charset': 'UTF-8', 'Data': html_body},
+                        'Text': {'Charset': 'UTF-8', 'Data': text_body},
+                    },
+                }
+            )
+            
+            logger.info(f"✅ Email sent successfully to {email}")
+            logger.info(f"   Message ID: {response.get('MessageId', 'N/A')}")
+            return True
+            
+        except ClientError as e:
+            logger.error(f"❌ SES send failed: {e.response['Error']['Code']}")
+            logger.error(f"   Error: {e.response['Error']['Message']}")
+            return False
+    
     def _create_wallet_welcome_html(self, user_name: str, wallet_number: str) -> str:
         """Create HTML for wallet welcome email"""
         current_year = datetime.now().year

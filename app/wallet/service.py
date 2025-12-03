@@ -62,7 +62,7 @@ class WalletService:
                 # Create initial transaction record
                 self.create_transaction(
                     wallet_id=response[0]['id'],
-                    transaction_type='account_opening',
+                    transaction_type='deposit',  # or 'payment' or 'refund'
                     amount=0.00,
                     description='Wallet account opened'
                 )

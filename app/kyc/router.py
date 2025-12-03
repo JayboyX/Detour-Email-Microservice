@@ -129,10 +129,13 @@ async def verify_kyc(
         if request.kyc_status == KYCStatus.VERIFIED:
             # a) Update users.is_kyc_verified
             user_updates = {
-                'is_kyc_verified': True,
-                'updated_at': datetime.utcnow().isoformat()
+                'is_kyc_verified': True
+                # Don't send updated_at - Supabase will handle it automatically
             }
             
+            print(f"DEBUG: Updating user {user_id} with: {user_updates}")
+            print(f"DEBUG: Type of is_kyc_verified: {type(user_updates['is_kyc_verified'])}")
+
             user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
             user_update_response = database_service.supabase.make_request(
                 "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
@@ -271,7 +274,6 @@ def send_welcome_email(email: str, name: str, wallet_number: str):
     The Detour Team
     """
     
-    email_service.send_custom_email(email, subject, html_body, text_body)
     email_service.send_wallet_welcome_email(email, name, wallet_number)
 
 def log_kyc_verification(admin_id: str, user_id: str, status: str):
