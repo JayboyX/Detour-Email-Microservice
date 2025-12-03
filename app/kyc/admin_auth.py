@@ -1,41 +1,33 @@
 """
 Admin authentication middleware
 """
-from fastapi import HTTPException, Header
-from typing import Optional
+from fastapi import HTTPException, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.shared.auth import auth_service
 from app.shared.database import database_service
 
-def verify_admin_token(admin_token: Optional[str] = Header(None, alias="admin-token")):
-    """Verify admin JWT token from admin-token header"""
-    if not admin_token:
-        raise HTTPException(status_code=401, detail="Missing admin token")
-    
-    payload = auth_service.decode_token(admin_token)
+security = HTTPBearer()
+
+def verify_admin_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Verify admin JWT token"""
+    token = credentials.credentials
+    payload = auth_service.decode_token(token)
     
     if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(401, "Invalid token")
     
-    admin_id = payload.get("sub")  # This should be the admin's user_id
+    user_id = payload.get("sub")
     
-    if not admin_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-    
-    # Check if user exists in admins table
+    # Check if user exists in admin table
     try:
-        endpoint = f"/rest/v1/admins?user_id=eq.{admin_id}"
+        endpoint = f"/rest/v1/admins?user_id=eq.{user_id}"
         response = database_service.supabase.make_request(
             "GET", endpoint, headers=database_service.supabase.service_headers
         )
         
         if not response:
-            raise HTTPException(status_code=403, detail="Admin access required")
+            raise HTTPException(403, "Admin access required")
         
-        # Check if admin is active
-        admin_data = response[0]
-        if not admin_data.get('is_active', True):
-            raise HTTPException(status_code=403, detail="Admin account is inactive")
-        
-        return admin_id
+        return user_id
     except Exception as e:
-        raise HTTPException(status_code=403, detail=f"Admin verification failed: {str(e)}")
+        raise HTTPException(403, "Admin verification failed")
