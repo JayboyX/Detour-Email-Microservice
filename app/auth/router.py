@@ -216,3 +216,23 @@ async def test_sms_connection():
             message=f"SMS service test failed: {result.get('error')}",
             data=result
         )
+    
+@router.get("/check-verification/{email}", response_model=SuccessResponse)
+async def check_verification(email: str):
+    """Check if user's email is verified"""
+    try:
+        user = database_service.get_user_by_email(email)
+        if not user:
+            return SuccessResponse(success=False, message="User not found")
+        
+        return SuccessResponse(
+            success=True,
+            message="Verification status retrieved",
+            data={
+                "email_verified": user.get('email_verified', False),
+                "email": user['email'],
+                "user_id": user['id']
+            }
+        )
+    except Exception as e:
+        return SuccessResponse(success=False, message=f"Check failed: {str(e)}")

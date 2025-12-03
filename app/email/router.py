@@ -19,3 +19,12 @@ async def test_email():
         "sender": email_service.sender_email,
         "has_ses_permissions": email_service.has_ses_permissions
     }
+
+@router.get("/debug")
+async def debug_email():
+    """Debug email service"""
+    return {
+        "sender": email_service.sender_email,
+        "has_ses_permissions": email_service.has_ses_permissions,
+        "debug_mode": settings.debug
+    }
