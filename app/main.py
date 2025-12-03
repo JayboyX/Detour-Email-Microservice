@@ -27,8 +27,8 @@ app = FastAPI(
     title="Detour Microservices",
     description="Email, SMS, and Authentication services for Detour Driver App",
     version="1.0.0",
-    docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None
+    docs_url="/docs" if settings.enable_docs else None,  # CHANGE: debug → enable_docs
+    redoc_url="/redoc" if settings.enable_docs else None  # CHANGE: debug → enable_docs
 )
 
 # CORS middleware
@@ -56,7 +56,7 @@ async def root():
             "email": "/api/email",
             "sms": "/api/sms"
         },
-        "docs": "/docs" if settings.debug else "disabled in production"
+        "docs": "/docs" if settings.enable_docs else "disabled in production"  # CHANGE HERE
     }
 
 @app.get("/health")

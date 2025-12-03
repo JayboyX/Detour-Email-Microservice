@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     # App
     app_name: str = "Detour Microservices"
     debug: bool = False
+    enable_docs: bool = True  # ADD THIS LINE - controls /docs access
     app_scheme: str = "detourui"
     api_base_url: str
     frontend_url: str = "http://localhost:3000"

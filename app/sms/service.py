@@ -41,17 +41,30 @@ class SMSService:
             
             message = f"Your Detour verification code is: {otp_code}. Valid for {settings.otp_expiry_minutes} minutes."
             
-            if self.initialized and not settings.debug:
+            # CHANGE: Always try to send via WinSMS if initialized, regardless of debug mode
+            # Debug mode only affects whether we log instead of sending
+            if self.initialized:
+                # If debug mode is ON, just log it
+                if settings.debug:
+                    return self._debug_send(cleaned_number, otp_code, message)
+                
+                # If debug mode is OFF, try to send real SMS
                 result = self._send_via_winsms(cleaned_number, message)
+                
+                # If real SMS fails, fall back to debug mode
                 if result["success"]:
                     return result
-                
-            return self._debug_send(cleaned_number, otp_code, message)
+                else:
+                    logger.warning(f"Real SMS failed, falling back to debug: {result.get('error')}")
+                    return self._debug_send(cleaned_number, otp_code, message)
             
+            # If SMS service not initialized, use debug mode
+            return self._debug_send(cleaned_number, otp_code, message)
+                
         except Exception as e:
             logger.error(f"Error sending SMS: {e}")
             return self._debug_send(phone_number, otp_code, f"Error: {str(e)}")
-    
+        
     def _clean_phone_number(self, phone_number: str) -> str:
         """Clean and format phone number"""
         digits = ''.join(filter(str.isdigit, phone_number))
