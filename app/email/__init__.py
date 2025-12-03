@@ -1,0 +1,1 @@
+# Email microservice package

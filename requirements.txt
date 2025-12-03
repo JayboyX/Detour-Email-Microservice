@@ -1,4 +1,3 @@
-# requirements.txt - COMPLETE WORKING VERSION
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-jose[cryptography]==3.3.0
@@ -8,12 +7,6 @@ pydantic-settings==2.1.0
 python-dotenv==1.0.0
 python-multipart==0.0.6
 httpx==0.28.1
-email-validator==2.1.1
 requests==2.31.0
-urllib3==1.26.20
-certifi==2023.11.17
-charset-normalizer==3.3.2
-idna==3.6
-boto3==1.34.0  # <-- ADD THIS LINE
-botocore==1.34.162  # <-- ADD THIS LINE
-bcrypt==4.0.1
+boto3==1.34.0
+botocore==1.34.162

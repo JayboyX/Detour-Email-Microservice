@@ -1,3 +1,6 @@
+"""
+Shared authentication service
+"""
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from jose import JWTError, jwt
@@ -42,13 +45,6 @@ class AuthService:
         except JWTError:
             return None
     
-    def is_verification_token(self, token: str) -> bool:
-        """Check if token is for email verification"""
-        payload = self.decode_token(token)
-        if not payload:
-            return False
-        return payload.get("purpose") == "email_verification"
-    
     def create_access_token(self, user_id: str) -> str:
         """Create access token for authenticated sessions"""
         expire = datetime.utcnow() + timedelta(hours=24)
@@ -59,3 +55,6 @@ class AuthService:
             "type": "access"
         }
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+
+# Create global instance
+auth_service = AuthService()
