@@ -17,7 +17,7 @@ from app.auth.router import router as auth_router
 from app.email.router import router as email_router
 from app.sms.router import router as sms_router
 from app.kyc.router import router as kyc_router
-
+from app.wallet.router import router as wallet_router
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +47,7 @@ app.include_router(auth_router, prefix="/api/auth")
 app.include_router(email_router, prefix="/api/email")
 app.include_router(sms_router, prefix="/api/sms")
 app.include_router(kyc_router, prefix="/api/kyc")
+app.include_router(wallet_router, prefix="/api/wallet")
 
 @app.get("/")
 async def root():
