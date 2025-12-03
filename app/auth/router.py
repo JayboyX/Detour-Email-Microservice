@@ -547,3 +547,29 @@ async def test_sms_connection():
             success=False,
             message=f"SMS test failed: {str(e)}"
         )
+    
+@router.post("/admin/register", response_model=SuccessResponse)
+async def register_admin(
+    user_id: str,
+    admin_user_id: str = Depends(verify_admin_token)  # Only existing admins can register new admins
+):
+    """Register a new admin (admin only)"""
+    try:
+        admin_data = {
+            'user_id': user_id,
+            'role': 'moderator',
+            'permissions': ['read', 'write', 'verify']
+        }
+        
+        endpoint = "/rest/v1/admins"
+        response = database_service.supabase.make_request(
+            "POST", endpoint, admin_data, database_service.supabase.service_headers
+        )
+        
+        return SuccessResponse(
+            success=True,
+            message="Admin registered successfully",
+            data={"admin_id": response[0]['id'] if response else None}
+        )
+    except Exception as e:
+        return SuccessResponse(success=False, message=str(e))

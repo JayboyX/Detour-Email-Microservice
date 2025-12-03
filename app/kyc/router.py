@@ -1,6 +1,4 @@
-"""
-KYC microservice router
-"""
+"""KYC microservice router"""
 import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -11,7 +9,7 @@ from app.kyc.schemas import KYCSubmitRequest, KYCListResponse, KYCVerifyRequest,
 from app.kyc.admin_auth import verify_admin_token
 from app.shared.database import database_service
 from app.email.service import email_service
-from app.wallet.service import wallet_service  # We'll create this next
+from app.wallet.service import wallet_service
 
 logger = logging.getLogger(__name__)
 
@@ -103,41 +101,85 @@ async def verify_kyc(
 ):
     """Verify KYC and create wallet (admin only)"""
     try:
-        # Update KYC status
+        # 1. Get KYC record to find user_id
+        kyc_endpoint = f"/rest/v1/kyc_information?id=eq.{request.kyc_id}"
+        kyc_response = database_service.supabase.make_request(
+            "GET", kyc_endpoint, headers=database_service.supabase.service_headers
+        )
+        
+        if not kyc_response:
+            return SuccessResponse(success=False, message="KYC record not found")
+        
+        kyc_record = kyc_response[0]
+        user_id = kyc_record['user_id']
+        
+        # 2. Update KYC status
         updates = {
             'kyc_status': request.kyc_status.value,
             'bav_status': request.bav_status.value,
-            'admin_notes': request.admin_notes
+            'admin_notes': request.admin_notes,
+            'updated_at': datetime.utcnow().isoformat()
         }
         
         success = kyc_service.update_kyc_status(request.kyc_id, updates)
         if not success:
             return SuccessResponse(success=False, message="Failed to update KYC")
         
-        # If verified, create wallet and send welcome email
+        # 3. If verified, update users table and create wallet
         if request.kyc_status == KYCStatus.VERIFIED:
-            # Get KYC info
-            kyc = kyc_service.get_kyc_by_user_id(
-                request.kyc_id.split('_')[0]  # Extract user_id from kyc_id
+            # a) Update users.is_kyc_verified
+            user_updates = {
+                'is_kyc_verified': True,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
+            user_update_response = database_service.supabase.make_request(
+                "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
             )
             
-            if kyc:
-                user_id = kyc['user_id']
-                user = database_service.get_user_by_id(user_id)
-                
-                # Create wallet
-                wallet_result = wallet_service.create_wallet(user_id)
-                
-                # Send welcome email
-                background_tasks.add_task(
-                    send_welcome_email,
-                    user['email'],
-                    user['full_name'],
-                    wallet_result.get('wallet_number', '')
+            if not user_update_response:
+                logger.warning(f"Failed to update is_kyc_verified for user {user_id}")
+            
+            # b) Create wallet
+            wallet_result = wallet_service.create_wallet(user_id)
+            
+            # c) Send welcome email if wallet created successfully
+            if wallet_result.get("success"):
+                # Get user details
+                user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
+                user_response = database_service.supabase.make_request(
+                    "GET", user_endpoint, headers=database_service.supabase.service_headers
                 )
                 
-                # Log verification
-                log_kyc_verification(admin_id, user_id, request.kyc_status.value)
+                if user_response:
+                    user = user_response[0]
+                    wallet_number = wallet_result.get("wallet", {}).get("wallet_number", "")
+                    
+                    background_tasks.add_task(
+                        send_welcome_email,
+                        user['email'],
+                        user['full_name'],
+                        wallet_number
+                    )
+            
+            # d) Log verification
+            log_kyc_verification(admin_id, user_id, request.kyc_status.value)
+        
+        elif request.kyc_status == KYCStatus.REJECTED:
+            # If rejected, update user's KYC verification status to false
+            user_updates = {
+                'is_kyc_verified': False,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
+            database_service.supabase.make_request(
+                "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
+            )
+            
+            # Log rejection
+            log_kyc_verification(admin_id, user_id, request.kyc_status.value)
         
         return SuccessResponse(
             success=True,
@@ -145,6 +187,7 @@ async def verify_kyc(
         )
         
     except Exception as e:
+        logger.error(f"Error in KYC verification: {str(e)}")
         return SuccessResponse(success=False, message=str(e))
 
 def send_welcome_email(email: str, name: str, wallet_number: str):
