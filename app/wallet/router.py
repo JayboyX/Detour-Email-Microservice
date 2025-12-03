@@ -1,6 +1,8 @@
 """
 Wallet microservice router
 """
+import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from decimal import Decimal
@@ -9,6 +11,8 @@ from app.wallet.schemas import *
 from app.shared.auth import auth_service
 from app.shared.database import database_service
 from app.kyc.admin_auth import verify_admin_token  # Reuse admin auth
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["wallet"])
 

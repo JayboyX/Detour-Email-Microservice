@@ -1,14 +1,18 @@
 """
 KYC microservice router
 """
+import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from typing import List, Optional
 from app.kyc.service import kyc_service
-from app.kyc.schemas import *
+from app.kyc.schemas import SuccessResponse, KYCSubmitRequest, KYCListResponse, KYCVerifyRequest, KYCStatus
 from app.kyc.admin_auth import verify_admin_token
 from app.shared.database import database_service
 from app.email.service import email_service
 from app.wallet.service import wallet_service  # We'll create this next
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["kyc"])
 
@@ -224,7 +228,8 @@ def send_welcome_email(email: str, name: str, wallet_number: str):
     """
     
     email_service.send_custom_email(email, subject, html_body, text_body)
-
+    email_service.send_wallet_welcome_email(email, name, wallet_number)
+    
 def log_kyc_verification(admin_id: str, user_id: str, status: str):
     """Log KYC verification for audit trail"""
     log_entry = {
