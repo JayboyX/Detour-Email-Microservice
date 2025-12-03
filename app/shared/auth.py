@@ -18,10 +18,16 @@ class AuthService:
         """Verify password against hash"""
         if not hashed_password:
             return False
+        # bcrypt only uses first 72 bytes
+        if len(plain_password) > 72:
+            plain_password = plain_password[:72]
         return pwd_context.verify(plain_password, hashed_password)
     
     def get_password_hash(self, password: str) -> str:
         """Generate password hash"""
+        # bcrypt only uses first 72 bytes, truncate if needed
+        if len(password) > 72:
+            password = password[:72]
         return pwd_context.hash(password)
     
     def create_verification_token(self, user_id: str, email: str) -> str:

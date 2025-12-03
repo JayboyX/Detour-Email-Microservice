@@ -8,13 +8,10 @@ import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 import uuid
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ========== Supabase Client ==========
 class SupabaseClient:
@@ -99,8 +96,7 @@ class DatabaseService:
         """Create a new user in Supabase"""
         try:
             # Hash the password
-            from app.shared.auth import AuthService
-            auth_service = AuthService()
+            from app.shared.auth import auth_service
             hashed_password = auth_service.get_password_hash(user_data['password'])
             
             user_record = {
