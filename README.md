@@ -244,6 +244,22 @@ GET /api/sms/test-sms
 }
 ```
 
+### User Wallet Endpoints:
+
+* `GET /api/wallet/user/{user_id}` - Get user wallet
+* `POST /api/wallet/create` - Create wallet
+* `POST /api/wallet/{wallet_id}/deposit` - Deposit funds
+* `POST /api/wallet/{wallet_id}/withdraw` - Withdraw funds
+* `GET /api/wallet/{wallet_id}/transactions` - Get transaction history
+* `GET /api/wallet/{wallet_id}/balance` - Get wallet balance
+
+### Admin Wallet Endpoints:
+
+* `GET /api/wallet/admin/all` - Get all wallets
+* `GET /api/wallet/admin/user/{user_id}` - Get user wallet (admin)
+* `POST /api/wallet/admin/{wallet_id}/adjust` - Admin balance adjustment
+* `POST /api/wallet/admin/{wallet_id}/status` - Update wallet status
+
 ## 🌐 Web Pages
 
 ### **Email Verification Page**
