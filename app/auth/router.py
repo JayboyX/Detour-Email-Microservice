@@ -160,44 +160,126 @@ async def login(login_data: UserLoginRequest):
             )
         return SuccessResponse(success=False, message=result["message"])
 
-# ========== SMS OTP Endpoints ==========
+# ============================================================
+# SMS OTP SECTION (FULL IMPLEMENTATION – KYC TABLE COMPATIBLE)
+# ============================================================
+
 @router.post("/send-phone-otp", response_model=SuccessResponse)
-async def send_phone_otp(
-    request: SendOTPRequest,
-    background_tasks: BackgroundTasks
-):
-    """Send OTP to phone number for verification"""
+async def send_phone_otp(request: SendOTPRequest, background_tasks: BackgroundTasks):
+    """Send OTP to phone number"""
     try:
         user = database_service.get_user_by_id(request.user_id)
         if not user:
             return SuccessResponse(success=False, message="User not found")
-        
+
+        kyc = database_service.get_kyc_by_user_id(request.user_id)
+        if not kyc:
+            return SuccessResponse(success=False, message="KYC information not found")
+
+        if kyc.get("phone_verified"):
+            return SuccessResponse(
+                success=True,
+                message="Phone already verified",
+                data={"already_verified": True}
+            )
+
+        last_sent = kyc.get("phone_otp_last_sent")
+        if last_sent and not otp_service.can_resend_otp(last_sent):
+            return SuccessResponse(
+                success=False,
+                message="Please wait 60 seconds before requesting a new OTP"
+            )
+
         # Generate OTP
         otp_code = otp_service.generate_otp()
-        
-        # TODO: Implement OTP storage in database
-        # For now, just send SMS
-        
-        # Send SMS in background
+        expires_at = otp_service.get_otp_expiry()
+
+        # Store OTP
+        database_service.set_phone_otp(
+            request.user_id,
+            otp_code,
+            expires_at
+        )
+
+        # Send SMS
         background_tasks.add_task(
             sms_service.send_otp_sms,
             request.phone_number,
             otp_code,
-            user['full_name']
+            user["full_name"]
         )
-        
+
         return SuccessResponse(
             success=True,
             message=f"OTP sent to {request.phone_number}",
             data={
-                "expires_in_minutes": settings.otp_expiry_minutes,
                 "user_id": request.user_id,
-                "simulated": sms_service.initialized and not settings.debug
+                "expires_in_minutes": settings.otp_expiry_minutes
             }
         )
-        
+
     except Exception as e:
         return SuccessResponse(success=False, message=f"Failed to send OTP: {str(e)}")
+
+
+@router.post("/resend-phone-otp", response_model=SuccessResponse)
+async def resend_phone_otp(request: ResendOTPRequest, background_tasks: BackgroundTasks):
+    """Resend OTP"""
+    try:
+        user = database_service.get_user_by_id(request.user_id)
+        kyc = database_service.get_kyc_by_user_id(request.user_id)
+
+        last_sent = kyc.get("phone_otp_last_sent")
+        if last_sent and not otp_service.can_resend_otp(last_sent):
+            return SuccessResponse(
+                success=False,
+                message="Please wait 60 seconds before requesting a new OTP"
+            )
+
+        otp_code = otp_service.generate_otp()
+        expires_at = otp_service.get_otp_expiry()
+
+        database_service.set_phone_otp(
+            request.user_id,
+            otp_code,
+            expires_at
+        )
+
+        background_tasks.add_task(
+            sms_service.send_otp_sms,
+            request.phone_number,
+            otp_code,
+            user["full_name"]
+        )
+
+        return SuccessResponse(success=True, message="OTP resent successfully")
+
+    except Exception as e:
+        return SuccessResponse(success=False, message=f"Failed to resend OTP: {str(e)}")
+
+
+@router.post("/verify-phone-otp", response_model=SuccessResponse)
+async def verify_phone_otp(request: VerifyOTPRequest):
+    """Verify phone OTP"""
+    try:
+        result = database_service.verify_phone_otp(request.user_id, request.otp_code)
+
+        if not result.get("success"):
+            return SuccessResponse(
+                success=False,
+                message=result.get("error", "Verification failed"),
+                data={"remaining_attempts": result.get("remaining_attempts")}
+            )
+
+        return SuccessResponse(
+            success=True,
+            message="Phone number verified successfully",
+            data={"user_id": request.user_id, "verified": True}
+        )
+
+    except Exception as e:
+        return SuccessResponse(success=False, message=f"Verification failed: {str(e)}")
+
 
 @router.get("/test-sms-connection", response_model=SuccessResponse)
 async def test_sms_connection():
