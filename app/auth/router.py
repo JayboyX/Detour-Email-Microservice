@@ -19,6 +19,7 @@ from app.sms.otp_service import otp_service
 from app.shared.database import database_service
 from app.shared.auth import auth_service as shared_auth_service
 from app.config import settings
+from app.kyc.admin_auth import verify_admin_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["authentication"])
