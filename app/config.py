@@ -1,32 +1,37 @@
+"""
+Configuration Settings for Detour Microservices
+"""
+
 from pydantic_settings import BaseSettings
 from typing import Optional
 
+
 class Settings(BaseSettings):
-    # App
+    # Application
     app_name: str = "Detour Microservices"
     debug: bool = False
-    enable_docs: bool = True  # ADD THIS LINE - controls /docs access
+    enable_docs: bool = True
     app_scheme: str = "detourui"
     api_base_url: str
     frontend_url: str = "http://localhost:3000"
     
-    # Database
+    # Supabase
     supabase_url: str
     supabase_anon_key: str
     supabase_service_role: str
     
-    # Auth
+    # Authentication
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     verification_token_expire_hours: int = 24
     
-    # Email
+    # Email / AWS SES
     ses_sender_email: str
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_region: str = "us-east-1"
     
-    # SMS
+    # SMS / OTP
     sms_user: Optional[str] = None
     sms_password: Optional[str] = None
     sms_api_url: str = "https://api.winsms.co.za/api/batchmessage.asp"
@@ -36,8 +41,9 @@ class Settings(BaseSettings):
     
     # Development
     use_supabase_auth: bool = False
-    
+
     class Config:
         env_file = ".env"
+
 
 settings = Settings()

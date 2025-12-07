@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """
-Entry point for Detour Microservices
-Optimized for AWS App Runner
+Detour Microservices — Production Entry Point
+Optimized for AWS App Runner Deployment
 """
-import uvicorn
+
 import os
 import sys
+import uvicorn
 from dotenv import load_dotenv
 
-# Load environment variables first
+# ---------------------------------------------------------
+# Load Environment Variables
+# ---------------------------------------------------------
 load_dotenv()
 
+
+# ---------------------------------------------------------
+# Validate Required Environment Variables
+# ---------------------------------------------------------
 def check_environment():
-    """Verify required environment variables are set"""
     required_vars = [
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
@@ -20,44 +26,46 @@ def check_environment():
         "JWT_SECRET_KEY",
         "SES_SENDER_EMAIL",
     ]
-    
-    print("🔍 Checking environment variables...")
-    missing_vars = []
-    
+
+    print("\n🔍 Checking environment variables...")
+    missing = []
+
     for var in required_vars:
         value = os.getenv(var)
         if not value:
-            missing_vars.append(var)
+            missing.append(var)
         else:
-            # Don't print secrets
-            if "SECRET" in var or "KEY" in var or "PASSWORD" in var:
+            if any(x in var for x in ["SECRET", "KEY", "PASSWORD"]):
                 print(f"   ✅ {var}: [SET]")
             else:
-                print(f"   ✅ {var}: {value[:30]}..." if len(value) > 30 else f"   ✅ {var}: {value}")
-    
-    # Check AWS credentials
-    if not os.getenv("AWS_ACCESS_KEY_ID") and not os.getenv("AWS_SECRET_ACCESS_KEY"):
-        print("   ℹ️  AWS credentials: Using IAM role")
-    else:
+                preview = value[:30] + ("..." if len(value) > 30 else "")
+                print(f"   ✅ {var}: {preview}")
+
+    # AWS Credentials Check
+    if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
         print("   ✅ AWS credentials: From environment")
-    
-    if missing_vars:
-        print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+    else:
+        print("   ℹ️  AWS credentials: Using IAM role")
+
+    if missing:
+        print(f"\n❌ Missing required environment variables: {', '.join(missing)}\n")
         return False
-    
-    print("✅ All environment variables are set")
+
+    print("✅ All environment variables are set\n")
     return True
 
+
+# ---------------------------------------------------------
+# Application Entry
+# ---------------------------------------------------------
 def main():
-    """Main entry point"""
     if not check_environment():
         sys.exit(1)
-    
-    # Get port from environment (App Runner sets PORT)
+
     port = int(os.getenv("PORT", "8000"))
-    
+
     print("=" * 60)
-    print("🚗 Detour Microservices")
+    print("🚗 Detour Microservices — Production Start")
     print("=" * 60)
     print(f"🌐 Port: {port}")
     print(f"📧 Email Sender: {os.getenv('SES_SENDER_EMAIL')}")
@@ -65,15 +73,15 @@ def main():
     print(f"🔐 JWT Algorithm: {os.getenv('JWT_ALGORITHM', 'HS256')}")
     print(f"⚡ Debug Mode: {os.getenv('DEBUG', 'False')}")
     print("=" * 60)
-    
-    # Start the server
+
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
         port=port,
         log_level="info",
-        reload=os.getenv("DEBUG", "False").lower() == "true"
+        reload=os.getenv("DEBUG", "False").lower() == "true",
     )
+
 
 if __name__ == "__main__":
     main()

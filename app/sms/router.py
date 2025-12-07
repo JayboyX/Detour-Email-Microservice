@@ -1,15 +1,18 @@
 """
-SMS microservice router
+SMS Router
 """
-from fastapi import APIRouter, BackgroundTasks
+
+from fastapi import APIRouter
 from app.sms.service import sms_service
-from app.sms.otp_service import otp_service
 
 router = APIRouter(tags=["sms"])
 
+
+# ---------------------------------------------------------
+# Health Check
+# ---------------------------------------------------------
 @router.get("/test-sms")
 async def test_sms():
-    """Test SMS service"""
     result = sms_service.test_connection()
     return {
         "success": result["success"],

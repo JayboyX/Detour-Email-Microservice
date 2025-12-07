@@ -1,60 +1,65 @@
-"""KYC microservice router"""
+"""
+KYC Router
+"""
+
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from typing import List, Optional
+from fastapi import APIRouter, Depends, BackgroundTasks
+from typing import Optional
+
 from app.kyc.service import kyc_service
+from app.kyc.schemas import (
+    KYCSubmitRequest, KYCListResponse, KYCVerifyRequest, KYCStatus
+)
 from app.auth.schemas import SuccessResponse
-from app.kyc.schemas import KYCSubmitRequest, KYCListResponse, KYCVerifyRequest, KYCStatus
 from app.kyc.admin_auth import verify_admin_token
 from app.shared.database import database_service
-from app.email.service import email_service
 from app.wallet.service import wallet_service
+from app.email.service import email_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["kyc"])
 
-# User endpoints
+
+# ---------------------------------------------------------
+# User KYC Endpoints
+# ---------------------------------------------------------
 @router.post("/submit", response_model=SuccessResponse)
-async def submit_kyc(
-    user_id: str,
-    kyc_data: KYCSubmitRequest,
-    background_tasks: BackgroundTasks
-):
-    """Submit KYC information"""
+async def submit_kyc(user_id: str, kyc_data: KYCSubmitRequest, background_tasks: BackgroundTasks):
     result = kyc_service.submit_kyc(user_id, kyc_data.dict())
+
     if result["success"]:
         return SuccessResponse(
             success=True,
             message=result["message"],
             data={"kyc_id": result.get("kyc_id")}
         )
+
     return SuccessResponse(success=False, message=result["message"])
+
 
 @router.get("/status/{user_id}", response_model=SuccessResponse)
 async def get_kyc_status(user_id: str):
-    """Get KYC status for user"""
     kyc = kyc_service.get_kyc_by_user_id(user_id)
+
     if not kyc:
         return SuccessResponse(success=False, message="KYC not found")
-    
-    return SuccessResponse(
-        success=True,
-        message="KYC status retrieved",
-        data=kyc
-    )
 
-# Admin endpoints (protected)
+    return SuccessResponse(success=True, message="KYC status retrieved", data=kyc)
+
+
+# ---------------------------------------------------------
+# Admin KYC Endpoints
+# ---------------------------------------------------------
 @router.get("/admin/list", response_model=KYCListResponse)
 async def list_all_kyc(
     status: Optional[str] = None,
     admin_id: str = Depends(verify_admin_token)
 ):
-    """List all KYC records (admin only)"""
     kycs = kyc_service.get_all_kyc(status)
     stats = kyc_service.get_kyc_stats()
-    
+
     return KYCListResponse(
         total=stats["total"],
         pending=stats["pending"],
@@ -63,35 +68,33 @@ async def list_all_kyc(
         kycs=kycs
     )
 
+
 @router.get("/admin/details/{kyc_id}", response_model=SuccessResponse)
 async def get_kyc_details(
     kyc_id: str,
     admin_id: str = Depends(verify_admin_token)
 ):
-    """Get detailed KYC information (admin only)"""
     try:
         endpoint = f"/rest/v1/kyc_information?id=eq.{kyc_id}"
         response = database_service.supabase.make_request(
             "GET", endpoint, headers=database_service.supabase.service_headers
         )
-        
+
         if not response:
             return SuccessResponse(success=False, message="KYC not found")
-        
-        # Get user details
+
         kyc = response[0]
-        user = database_service.get_user_by_id(kyc['user_id'])
-        
+        user = database_service.get_user_by_id(kyc["user_id"])
+
         return SuccessResponse(
             success=True,
             message="KYC details retrieved",
-            data={
-                "kyc": kyc,
-                "user": user
-            }
+            data={"kyc": kyc, "user": user}
         )
+
     except Exception as e:
         return SuccessResponse(success=False, message=str(e))
+
 
 @router.post("/admin/verify", response_model=SuccessResponse)
 async def verify_kyc(
@@ -99,196 +102,93 @@ async def verify_kyc(
     background_tasks: BackgroundTasks,
     admin_id: str = Depends(verify_admin_token)
 ):
-    """Verify KYC and create wallet (admin only)"""
     try:
-        # 1. Get KYC record to find user_id
-        kyc_endpoint = f"/rest/v1/kyc_information?id=eq.{request.kyc_id}"
+        # Load KYC record
+        endpoint = f"/rest/v1/kyc_information?id=eq.{request.kyc_id}"
         kyc_response = database_service.supabase.make_request(
-            "GET", kyc_endpoint, headers=database_service.supabase.service_headers
+            "GET", endpoint, headers=database_service.supabase.service_headers
         )
-        
-        if not kyc_response:
-            return SuccessResponse(success=False, message="KYC record not found")
-        
-        kyc_record = kyc_response[0]
-        user_id = kyc_record['user_id']
-        
-        # 2. Update KYC status
-        updates = {
-            'kyc_status': request.kyc_status.value,
-            'bav_status': request.bav_status.value,
-            'admin_notes': request.admin_notes,
-            'updated_at': datetime.utcnow().isoformat()
-        }
-        
-        success = kyc_service.update_kyc_status(request.kyc_id, updates)
-        if not success:
-            return SuccessResponse(success=False, message="Failed to update KYC")
-        
-        # 3. If verified, update users table and create wallet
-        if request.kyc_status == KYCStatus.VERIFIED:
-            # a) Update users.is_kyc_verified
-            user_updates = {
-                'is_kyc_verified': True
-                # Don't send updated_at - Supabase will handle it automatically
-            }
-            
-            print(f"DEBUG: Updating user {user_id} with: {user_updates}")
-            print(f"DEBUG: Type of is_kyc_verified: {type(user_updates['is_kyc_verified'])}")
 
-            user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
-            user_update_response = database_service.supabase.make_request(
-                "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
-            )
-            
-            if not user_update_response:
-                logger.warning(f"Failed to update is_kyc_verified for user {user_id}")
-            
-            # b) Create wallet
-            wallet_result = wallet_service.create_wallet(user_id)
-            
-            # c) Send welcome email if wallet created successfully
-            if wallet_result.get("success"):
-                # Get user details
-                user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
-                user_response = database_service.supabase.make_request(
-                    "GET", user_endpoint, headers=database_service.supabase.service_headers
-                )
-                
-                if user_response:
-                    user = user_response[0]
-                    wallet_number = wallet_result.get("wallet", {}).get("wallet_number", "")
-                    
-                    background_tasks.add_task(
-                        send_welcome_email,
-                        user['email'],
-                        user['full_name'],
-                        wallet_number
-                    )
-            
-            # d) Log verification
-            log_kyc_verification(admin_id, user_id, request.kyc_status.value)
-        
-        elif request.kyc_status == KYCStatus.REJECTED:
-            # If rejected, update user's KYC verification status to false
-            user_updates = {
-                'is_kyc_verified': False,
-                'updated_at': datetime.utcnow().isoformat()
-            }
-            
+        if not kyc_response:
+            return SuccessResponse(success=False, message="KYC not found")
+
+        kyc_record = kyc_response[0]
+        user_id = kyc_record["user_id"]
+
+        # Update status
+        updates = {
+            "kyc_status": request.kyc_status.value,
+            "bav_status": request.bav_status.value,
+            "admin_notes": request.admin_notes,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        if not kyc_service.update_kyc_status(request.kyc_id, updates):
+            return SuccessResponse(success=False, message="Failed to update KYC")
+
+        # Verified flow
+        if request.kyc_status == KYCStatus.VERIFIED:
+
+            # Mark user verified
+            user_updates = {"is_kyc_verified": True}
             user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
             database_service.supabase.make_request(
                 "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
             )
-            
-            # Log rejection
-            log_kyc_verification(admin_id, user_id, request.kyc_status.value)
-        
+
+            # Create wallet
+            wallet_result = wallet_service.create_wallet(user_id)
+
+            # Send welcome email
+            if wallet_result.get("success"):
+                user = database_service.get_user_by_id(user_id)
+                wallet_number = wallet_result.get("wallet", {}).get("wallet_number")
+
+                background_tasks.add_task(
+                    email_service.send_wallet_welcome_email,
+                    user["email"],
+                    user["full_name"],
+                    wallet_number
+                )
+
+            _log_kyc(admin_id, user_id, request.kyc_status.value)
+
+        # Rejected flow
+        elif request.kyc_status == KYCStatus.REJECTED:
+            user_updates = {
+                "is_kyc_verified": False,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
+            database_service.supabase.make_request(
+                "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
+            )
+
+            _log_kyc(admin_id, user_id, request.kyc_status.value)
+
         return SuccessResponse(
             success=True,
             message=f"KYC {request.kyc_status.value} successfully"
         )
-        
+
     except Exception as e:
-        logger.error(f"Error in KYC verification: {str(e)}")
+        logger.error(f"KYC verification error: {e}")
         return SuccessResponse(success=False, message=str(e))
 
-def send_welcome_email(email: str, name: str, wallet_number: str):
-    """Send welcome email with wallet information"""
-    subject = "Welcome to Detour - Your Driver Wallet is Ready! 🚗"
-    
-    html_body = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
-            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-            .header {{ background-color: #2AB576; color: white; padding: 20px; text-align: center; }}
-            .content {{ padding: 30px; }}
-            .wallet-box {{ background: #f8f9fa; border: 2px solid #2AB576; padding: 15px; border-radius: 8px; margin: 20px 0; }}
-            .button {{ background: #2AB576; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>🎉 Welcome to Detour!</h1>
-                <p>You're Now a Verified Driver</p>
-            </div>
-            <div class="content">
-                <h2>Hi {name},</h2>
-                <p>Congratulations! Your KYC verification has been <strong>approved</strong>.</p>
-                
-                <div class="wallet-box">
-                    <h3>💰 Your Driver Wallet</h3>
-                    <p><strong>Wallet Number:</strong> {wallet_number}</p>
-                    <p><strong>Initial Balance:</strong> R 0.00</p>
-                    <p><strong>Status:</strong> Active</p>
-                </div>
-                
-                <p>You can now start earning as a Detour driver!</p>
-                
-                <h3>📱 Next Steps:</h3>
-                <ul>
-                    <li>Access your wallet from the Dashboard</li>
-                    <li>Check available rides in your area</li>
-                    <li>Start accepting ride requests</li>
-                </ul>
-                
-                <p><strong>Want more benefits?</strong> Subscribe to premium features:</p>
-                <a href="detourui://dashboard/subscription" class="button">View Subscription Plans</a>
-                
-                <p style="margin-top: 30px;">Happy driving! 🚗</p>
-                <p><em>The Detour Team</em></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    
-    text_body = f"""
-    Welcome to Detour - Your Driver Wallet is Ready!
-    
-    Hi {name},
-    
-    Congratulations! Your KYC verification has been approved.
-    
-    Your Driver Wallet:
-    - Wallet Number: {wallet_number}
-    - Initial Balance: R 0.00
-    - Status: Active
-    
-    You can now start earning as a Detour driver!
-    
-    Next Steps:
-    1. Access your wallet from the Dashboard
-    2. Check available rides in your area
-    3. Start accepting ride requests
-    
-    Want more benefits? Subscribe to premium features.
-    Go to Subscription in your dashboard.
-    
-    Happy driving!
-    The Detour Team
-    """
-    
-    email_service.send_wallet_welcome_email(email, name, wallet_number)
 
-def log_kyc_verification(admin_id: str, user_id: str, status: str):
-    """Log KYC verification for audit trail"""
-    log_entry = {
+# ---------------------------------------------------------
+# Internal Helpers
+# ---------------------------------------------------------
+def _log_kyc(admin_id: str, user_id: str, status: str):
+    entry = {
         "timestamp": datetime.utcnow().isoformat(),
         "admin_id": admin_id,
         "user_id": user_id,
-        "action": f"kyc_{status}",
-        "message": f"KYC {status} by admin {admin_id}"
+        "action": f"KYC {status}",
     }
-    
     try:
-        with open('logs/kyc_audit.log', 'a') as f:
+        with open("logs/kyc_audit.log", "a") as f:
             import json
-            f.write(json.dumps(log_entry) + '\n')
+            f.write(json.dumps(entry) + "\n")
     except Exception as e:
-        logger.error(f"Failed to log KYC verification: {e}")
+        logger.error(f"Failed to write KYC audit log: {e}")

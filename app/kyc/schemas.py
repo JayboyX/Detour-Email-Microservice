@@ -1,22 +1,25 @@
 """
-Pydantic schemas for KYC
+KYC Schemas
 """
-from pydantic import BaseModel, validator
+
+from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
 from enum import Enum
+
 
 class KYCStatus(str, Enum):
     PENDING = "pending"
     VERIFIED = "verified"
     REJECTED = "rejected"
 
+
 class BAVStatus(str, Enum):
     PENDING = "pending"
     VERIFIED = "verified"
     FAILED = "failed"
 
-# KYC Submission
+
 class KYCSubmitRequest(BaseModel):
     id_number: str
     first_name: str
@@ -30,13 +33,13 @@ class KYCSubmitRequest(BaseModel):
     id_document_url: Optional[str] = None
     selfie_url: Optional[str] = None
 
-# KYC Update (Admin)
+
 class KYCUpdateRequest(BaseModel):
     kyc_status: Optional[KYCStatus] = None
     bav_status: Optional[BAVStatus] = None
     notes: Optional[str] = None
 
-# KYC Response
+
 class KYCResponse(BaseModel):
     id: str
     user_id: str
@@ -49,7 +52,7 @@ class KYCResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-# Admin KYC List
+
 class KYCListResponse(BaseModel):
     total: int
     pending: int
@@ -57,7 +60,7 @@ class KYCListResponse(BaseModel):
     rejected: int
     kycs: List[KYCResponse]
 
-# Admin verification
+
 class KYCVerifyRequest(BaseModel):
     kyc_id: str
     kyc_status: KYCStatus

@@ -199,6 +199,46 @@ class EmailService:
             logger.error(f"❌ SES send failed: {e.response['Error']['Code']}")
             logger.error(f"   Error: {e.response['Error']['Message']}")
             return False
+        
+    def send_email(self, to: str, subject: str, html_content: str, text_content: str = None) -> bool:
+        """
+        Universal email sender for Detour.
+        Used by subscriptions, wallet, onboarding, etc.
+        """
+
+        if text_content is None:
+            text_content = "Your email client does not support HTML."
+
+        # Use real SES if allowed
+        if self.has_ses_permissions and not settings.debug:
+            try:
+                self.ses_client.send_email(
+                    Source=self.sender_email,
+                    Destination={'ToAddresses': [to]},
+                    Message={
+                        'Subject': {'Charset': 'UTF-8', 'Data': subject},
+                        'Body': {
+                            'Html': {'Charset': 'UTF-8', 'Data': html_content},
+                            'Text': {'Charset': 'UTF-8', 'Data': text_content},
+                        },
+                    }
+                )
+                logger.info(f"📧 Email sent via SES → {to}")
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ SES send_email failed: {e}")
+                return False
+
+        # Debug fallback
+        print("\n" + "="*60)
+        print(f"📧 DEBUG EMAIL (send_email) → {to}")
+        print(f"SUBJECT: {subject}")
+        print(f"HTML BODY:\n{html_content}")
+        print("="*60 + "\n")
+
+        return True
+
     
     def _create_wallet_welcome_html(self, user_name: str, wallet_number: str) -> str:
         """Create HTML for wallet welcome email"""
