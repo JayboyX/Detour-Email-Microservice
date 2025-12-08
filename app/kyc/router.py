@@ -193,25 +193,28 @@ async def verify_kyc(
 @router.get("/cron/auto-verify", response_model=SuccessResponse)
 async def auto_verify_pending(background_tasks: BackgroundTasks):
     """
-    This endpoint is hit every 2 minutes by cron-job.org.
-    Logic:
-      - Find KYC with status pending
-      - Only auto-verify if BAV is already verified
-      - Mark user KYC verified
-      - Create wallet
-      - Send welcome email
+    Auto-verify all KYC submissions every 2 minutes.
+    Human intervention is NOT required.
+    
+    Rules:
+      - If KYC is pending, verify it.
+      - BAV is automatically marked as verified.
+      - User is marked as fully KYC verified.
+      - Wallet is generated.
+      - Welcome email is sent.
     """
 
+    # Get ALL pending KYC (no BAV checks)
     pending_records = database_service.supabase.make_request(
         "GET",
-        "/rest/v1/kyc_information?kyc_status=eq.pending&bav_status=eq.verified",
+        "/rest/v1/kyc_information?kyc_status=eq.pending",
         database_service.supabase.service_headers,
     )
 
     if not pending_records:
         return SuccessResponse(
             success=True,
-            message="No pending KYC records to auto-verify",
+            message="No pending KYC records found",
             data={"verified": 0},
         )
 
@@ -223,16 +226,17 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
             kyc_id = record["id"]
             user_id = record["user_id"]
 
-            # Update the KYC
+            # 1️⃣ Update KYC to verified
             kyc_service.update_kyc_status(
                 kyc_id,
                 {
-                    "kyc_status": KYCStatus.VERIFIED.value,
+                    "kyc_status": "verified",
+                    "bav_status": "verified",   # AUTO VERIFIED
                     "updated_at": datetime.utcnow().isoformat(),
                 },
             )
 
-            # Update user profile
+            # 2️⃣ Mark user as verified
             database_service.supabase.make_request(
                 "PATCH",
                 f"/rest/v1/users?id=eq.{user_id}",
@@ -240,10 +244,10 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
                 database_service.supabase.service_headers,
             )
 
-            # Create wallet
+            # 3️⃣ Create wallet
             wallet_result = wallet_service.create_wallet(user_id)
 
-            # Send welcome email
+            # 4️⃣ Send welcome email
             if wallet_result.get("success"):
                 user = database_service.get_user_by_id(user_id)
                 wallet_num = wallet_result["wallet"]["wallet_number"]
@@ -259,8 +263,8 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
             verified_count += 1
 
         except Exception as e:
-            logger.error(f"Auto-verify failed for KYC {record['id']}: {e}")
-            results.append({"kyc_id": record["id"], "status": "error", "error": str(e)})
+            logger.error(f"Auto-verify error for KYC {kyc_id}: {e}")
+            results.append({"kyc_id": kyc_id, "status": "error", "error": str(e)})
 
     return SuccessResponse(
         success=True,

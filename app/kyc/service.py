@@ -1,5 +1,5 @@
 """
-KYC Service
+KYC Service — Full Auto-Mode
 """
 
 import logging
@@ -21,7 +21,10 @@ class KYCService:
     # ---------------------------------------------------------
     def submit_kyc(self, user_id: str, kyc_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Creates a new KYC record with status = pending.
+        Creates a new KYC record with:
+            kyc_status = pending
+            bav_status = pending
+        Cron will auto-verify both fields.
         """
 
         try:
@@ -52,39 +55,39 @@ class KYCService:
             return {"success": False, "message": "Failed to submit KYC"}
 
     # ---------------------------------------------------------
-    # Get KYC Record for User
+    # Get KYC by user ID
     # ---------------------------------------------------------
     def get_kyc_by_user_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
-            endpoint = f"/rest/v1/kyc_information?user_id=eq.{user_id}"
             response = self.supabase.make_request(
-                "GET", endpoint, headers=self.supabase.anon_headers
+                "GET",
+                f"/rest/v1/kyc_information?user_id=eq.{user_id}",
+                self.supabase.anon_headers,
             )
             return response[0] if response else None
 
         except Exception as e:
-            logger.error(f"[KYC] Error loading user KYC: {e}")
+            logger.error(f"[KYC] Load error user {user_id}: {e}")
             return None
 
     # ---------------------------------------------------------
-    # Get KYC Record by KYC ID
+    # Get KYC by KYC ID
     # ---------------------------------------------------------
     def get_kyc_by_id(self, kyc_id: str) -> Optional[Dict[str, Any]]:
         try:
-            endpoint = f"/rest/v1/kyc_information?id=eq.{kyc_id}"
             response = self.supabase.make_request(
                 "GET",
-                endpoint,
-                headers=self.supabase.service_headers,
+                f"/rest/v1/kyc_information?id=eq.{kyc_id}",
+                self.supabase.service_headers,
             )
             return response[0] if response else None
 
         except Exception as e:
-            logger.error(f"[KYC] Error loading KYC {kyc_id}: {e}")
+            logger.error(f"[KYC] Load error kyc_id {kyc_id}: {e}")
             return None
 
     # ---------------------------------------------------------
-    # Admin: Get All KYC Records
+    # Get All KYC Records (Admin)
     # ---------------------------------------------------------
     def get_all_kyc(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
@@ -93,31 +96,34 @@ class KYCService:
                 endpoint += f"?kyc_status=eq.{status}"
 
             response = self.supabase.make_request(
-                "GET", endpoint, headers=self.supabase.service_headers
+                "GET",
+                endpoint,
+                self.supabase.service_headers,
             )
 
             return response or []
 
         except Exception as e:
-            logger.error(f"[KYC] Error loading all KYC: {e}")
+            logger.error(f"[KYC] Get all error: {e}")
             return []
 
     # ---------------------------------------------------------
-    # Admin: Update KYC Status
+    # Update KYC Record (used by admin OR cron)
     # ---------------------------------------------------------
     def update_kyc_status(self, kyc_id: str, updates: Dict[str, Any]) -> bool:
         """
-        Updates kyc_status, bav_status, admin notes, etc.
-        Returns True if update was successful.
+        Updates KYC fields such as:
+            kyc_status
+            bav_status
+            admin_notes
         """
 
         try:
             updates["updated_at"] = datetime.utcnow().isoformat()
 
-            endpoint = f"/rest/v1/kyc_information?id=eq.{kyc_id}"
             response = self.supabase.make_request(
                 "PATCH",
-                endpoint,
+                f"/rest/v1/kyc_information?id=eq.{kyc_id}",
                 updates,
                 self.supabase.service_headers,
             )
@@ -125,7 +131,7 @@ class KYCService:
             return bool(response)
 
         except Exception as e:
-            logger.error(f"[KYC] Update error for {kyc_id}: {e}")
+            logger.error(f"[KYC] Update error kyc_id {kyc_id}: {e}")
             return False
 
     # ---------------------------------------------------------
@@ -133,13 +139,13 @@ class KYCService:
     # ---------------------------------------------------------
     def get_kyc_stats(self) -> Dict[str, Any]:
         try:
-            all_kyc = self.get_all_kyc()
+            all_records = self.get_all_kyc()
 
             return {
-                "total": len(all_kyc),
-                "pending": sum(1 for k in all_kyc if k.get("kyc_status") == "pending"),
-                "verified": sum(1 for k in all_kyc if k.get("kyc_status") == "verified"),
-                "rejected": sum(1 for k in all_kyc if k.get("kyc_status") == "rejected"),
+                "total": len(all_records),
+                "pending": sum(1 for k in all_records if k["kyc_status"] == "pending"),
+                "verified": sum(1 for k in all_records if k["kyc_status"] == "verified"),
+                "rejected": sum(1 for k in all_records if k["kyc_status"] == "rejected"),
             }
 
         except Exception as e:
@@ -147,30 +153,26 @@ class KYCService:
             return {"total": 0, "pending": 0, "verified": 0, "rejected": 0}
 
     # ---------------------------------------------------------
-    # AUTO-VERIFY FETCH LOGIC FOR CRON
+    # AUTO MODE FETCH — USED BY CRON EVERY 2 MINUTES
     # ---------------------------------------------------------
     def get_pending_for_auto_verify(self) -> List[Dict[str, Any]]:
         """
-        Used by /cron/auto-verify.
-        Returns KYC records that are:
-          - pending
-          - bav_status = verified
+        AUTO-MODE:
+        - Fetch ALL pending KYC records
+        - Ignore BAV completely (auto-set to verified)
         """
 
         try:
-            endpoint = (
-                "/rest/v1/kyc_information"
-                "?kyc_status=eq.pending&bav_status=eq.verified"
-            )
-
             response = self.supabase.make_request(
-                "GET", endpoint, headers=self.supabase.service_headers
+                "GET",
+                "/rest/v1/kyc_information?kyc_status=eq.pending",
+                self.supabase.service_headers,
             )
 
             return response or []
 
         except Exception as e:
-            logger.error(f"[KYC] Auto-verify fetch error: {e}")
+            logger.error(f"[KYC] Auto verify fetch error: {e}")
             return []
 
 
