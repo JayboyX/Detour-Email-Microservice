@@ -1,53 +1,43 @@
 """
-Subscription Schemas
+Subscription Utility Helpers
 """
 
-from pydantic import BaseModel
-from typing import Optional, List
+from datetime import datetime, timedelta
+import uuid
 
 
 # ---------------------------------------------------------
-# Admin: Create Package
+# Generate ISO timestamp (UTC)
 # ---------------------------------------------------------
-class CreatePackageRequest(BaseModel):
-    name: str
-    price: float
-    period: str = "Weekly for 12 Months"
-    description: Optional[str] = None
-    benefits: Optional[List[str]] = []
-    weekly_advance_limit: float = 0.0
-    advance_percentage: int = 0
-    auto_repay_rate: int = 20
+def now_iso() -> str:
+    return datetime.utcnow().isoformat()
 
 
 # ---------------------------------------------------------
-# User: Activate Subscription (NO PAYMENT)
+# Generate a new UUID string
 # ---------------------------------------------------------
-class ActivateSubscriptionRequest(BaseModel):
-    user_id: str
-    package_id: str
+def new_id() -> str:
+    return str(uuid.uuid4())
 
 
 # ---------------------------------------------------------
-# User: Cancel Subscription
+# Next Friday Date
 # ---------------------------------------------------------
-class CancelSubscriptionRequest(BaseModel):
-    user_id: str
-    reason: Optional[str] = None
+def get_next_friday(from_date: datetime = None):
+    if from_date is None:
+        from_date = datetime.utcnow()
+
+    # Monday = 0 ... Friday = 4
+    days_ahead = 4 - from_date.weekday()
+    if days_ahead <= 0:
+        days_ahead += 7
+
+    return (from_date + timedelta(days=days_ahead)).date()
 
 
 # ---------------------------------------------------------
-# User: Upgrade / Downgrade Subscription
+# Today Midnight
 # ---------------------------------------------------------
-class SubscriptionUpdateRequest(BaseModel):
-    user_id: str
-    package_id: str
-
-
-# ---------------------------------------------------------
-# Generic Response Model
-# ---------------------------------------------------------
-class SubscriptionResponse(BaseModel):
-    success: bool
-    message: str
-    data: Optional[dict] = None
+def today_midnight():
+    now = datetime.utcnow()
+    return datetime(now.year, now.month, now.day)
