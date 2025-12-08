@@ -21,7 +21,7 @@ class CreatePackageRequest(BaseModel):
 
 
 # ---------------------------------------------------------
-# User: Activate Subscription
+# User: Activate Subscription (NO PAYMENT)
 # ---------------------------------------------------------
 class ActivateSubscriptionRequest(BaseModel):
     user_id: str
@@ -37,7 +37,15 @@ class CancelSubscriptionRequest(BaseModel):
 
 
 # ---------------------------------------------------------
-# Generic Response
+# User: Upgrade / Downgrade Subscription
+# ---------------------------------------------------------
+class SubscriptionUpdateRequest(BaseModel):
+    user_id: str
+    package_id: str
+
+
+# ---------------------------------------------------------
+# Generic Response Model
 # ---------------------------------------------------------
 class SubscriptionResponse(BaseModel):
     success: bool

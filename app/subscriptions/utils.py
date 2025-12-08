@@ -1,27 +1,53 @@
 """
-Subscription Utility Helpers
+Subscription Schemas
 """
 
-from datetime import datetime, timedelta
+from pydantic import BaseModel
+from typing import Optional, List
 
 
 # ---------------------------------------------------------
-# Next Friday Date
+# Admin: Create Package
 # ---------------------------------------------------------
-def get_next_friday(from_date: datetime = None):
-    if from_date is None:
-        from_date = datetime.utcnow()
-
-    days_ahead = 4 - from_date.weekday()
-    if days_ahead <= 0:
-        days_ahead += 7
-
-    return (from_date + timedelta(days=days_ahead)).date()
+class CreatePackageRequest(BaseModel):
+    name: str
+    price: float
+    period: str = "Weekly for 12 Months"
+    description: Optional[str] = None
+    benefits: Optional[List[str]] = []
+    weekly_advance_limit: float = 0.0
+    advance_percentage: int = 0
+    auto_repay_rate: int = 20
 
 
 # ---------------------------------------------------------
-# Today Midnight
+# User: Activate Subscription (NO PAYMENT)
 # ---------------------------------------------------------
-def today_midnight():
-    now = datetime.utcnow()
-    return datetime(now.year, now.month, now.day)
+class ActivateSubscriptionRequest(BaseModel):
+    user_id: str
+    package_id: str
+
+
+# ---------------------------------------------------------
+# User: Cancel Subscription
+# ---------------------------------------------------------
+class CancelSubscriptionRequest(BaseModel):
+    user_id: str
+    reason: Optional[str] = None
+
+
+# ---------------------------------------------------------
+# User: Upgrade / Downgrade Subscription
+# ---------------------------------------------------------
+class SubscriptionUpdateRequest(BaseModel):
+    user_id: str
+    package_id: str
+
+
+# ---------------------------------------------------------
+# Generic Response Model
+# ---------------------------------------------------------
+class SubscriptionResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[dict] = None

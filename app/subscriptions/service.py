@@ -7,7 +7,6 @@ from datetime import datetime
 from decimal import Decimal
 
 from app.shared.database import database_service
-from app.wallet.service import wallet_service
 from app.email.service import email_service
 from .utils import get_next_friday
 
@@ -69,7 +68,7 @@ class SubscriptionService:
         }
 
     # ---------------------------------------------------------
-    # Activate Subscription
+    # Activate Subscription (NO PAYMENT)
     # ---------------------------------------------------------
     def activate_subscription(self, user_id: str, package_id: str):
         existing = self.get_active_subscription(user_id)
@@ -81,23 +80,6 @@ class SubscriptionService:
             return {"success": False, "message": "Subscription package not found"}
 
         price = float(pkg["price"])
-
-        wallet = wallet_service.get_wallet_by_user_id(user_id)
-        if not wallet:
-            return {"success": False, "message": "Wallet not found"}
-
-        if float(wallet["balance"]) < price:
-            return {"success": False, "message": "Insufficient wallet balance"}
-
-        deduction = wallet_service.withdraw_funds(
-            wallet_id=wallet["id"],
-            amount=price,
-            description=f"Initial subscription payment for {pkg['name']}",
-        )
-        if not deduction["success"]:
-            return {"success": False, "message": "Initial payment failed"}
-
-        self.add_to_revenue(price)
 
         subscription_row = {
             "id": str(uuid.uuid4()),
@@ -119,7 +101,6 @@ class SubscriptionService:
         )
 
         self.log_event(user_id, package_id, "activated")
-        self.log_event(user_id, package_id, "initial_payment", {"amount": price})
         self.send_confirmation_email(user_id, pkg)
 
         return {"success": True, "message": "Subscription activated", "data": saved_sub[0]}
@@ -151,6 +132,62 @@ class SubscriptionService:
         return {"success": True, "message": "Subscription cancelled"}
 
     # ---------------------------------------------------------
+    # Upgrade Subscription
+    # ---------------------------------------------------------
+    def upgrade_subscription(self, user_id: str, package_id: str):
+
+        active = self.get_active_subscription(user_id)
+        if not active:
+            return {"success": False, "message": "No active subscription"}
+
+        current_pkg = self.get_package(active["package_id"])
+        new_pkg = self.get_package(package_id)
+
+        if not new_pkg:
+            return {"success": False, "message": "Package not found"}
+
+        if float(new_pkg["price"]) <= float(current_pkg["price"]):
+            return {"success": False, "message": "Not an upgrade"}
+
+        # cancel old sub
+        self.cancel_subscription(user_id, "upgrade")
+
+        # activate new sub
+        result = self.activate_subscription(user_id, package_id)
+
+        self.log_event(user_id, package_id, "upgraded")
+
+        return result
+
+    # ---------------------------------------------------------
+    # Downgrade Subscription
+    # ---------------------------------------------------------
+    def downgrade_subscription(self, user_id: str, package_id: str):
+
+        active = self.get_active_subscription(user_id)
+        if not active:
+            return {"success": False, "message": "No active subscription"}
+
+        current_pkg = self.get_package(active["package_id"])
+        new_pkg = self.get_package(package_id)
+
+        if not new_pkg:
+            return {"success": False, "message": "Package not found"}
+
+        if float(new_pkg["price"]) >= float(current_pkg["price"]):
+            return {"success": False, "message": "Not a downgrade"}
+
+        # cancel old sub
+        self.cancel_subscription(user_id, "downgrade")
+
+        # activate new sub
+        result = self.activate_subscription(user_id, package_id)
+
+        self.log_event(user_id, package_id, "downgraded")
+
+        return result
+
+    # ---------------------------------------------------------
     # Weekly Billing (Cron)
     # ---------------------------------------------------------
     def bill_all_users(self):
@@ -167,26 +204,27 @@ class SubscriptionService:
             package_id = sub["package_id"]
             amount = float(sub["current_weekly_price"])
 
-            wallet = wallet_service.get_wallet_by_user_id(user_id)
+            wallet = database_service.get_wallet_by_user_id(user_id)
             if not wallet:
                 results.append({"user_id": user_id, "status": "missing_wallet"})
                 continue
 
             if float(wallet["balance"]) >= amount:
-                withdrawal = wallet_service.withdraw_funds(
-                    wallet_id=wallet["id"],
-                    amount=amount,
-                    description="Weekly subscription renewal",
+                updated = {
+                    "balance": float(wallet["balance"]) - amount,
+                    "last_transaction_at": datetime.utcnow().isoformat(),
+                }
+
+                database_service.supabase.make_request(
+                    method="PATCH",
+                    endpoint=f"/rest/v1/wallets?id=eq.{wallet['id']}",
+                    data=updated,
+                    headers=database_service.supabase.service_headers,
                 )
 
-                if withdrawal["success"]:
-                    self.add_to_revenue(amount)
-                    self.log_event(user_id, package_id, "weekly_deduction", {"amount": amount})
-                    results.append({"user_id": user_id, "status": "charged"})
-                else:
-                    self.log_event(user_id, package_id, "failed_payment")
-                    results.append({"user_id": user_id, "status": "deduction_failed"})
-
+                self.add_to_revenue(amount)
+                self.log_event(user_id, package_id, "weekly_deduction", {"amount": amount})
+                results.append({"user_id": user_id, "status": "charged"})
             else:
                 self.log_event(user_id, package_id, "failed_payment", {"reason": "insufficient_funds"})
                 results.append({"user_id": user_id, "status": "insufficient_funds"})
@@ -261,7 +299,6 @@ class SubscriptionService:
         <p><strong>Next Billing:</strong> Coming Friday at Midnight</p>
         <p><strong>Your Benefits:</strong></p>
         <ul>{''.join(f'<li>{b}</li>' for b in benefits)}</ul>
-        <p>Thank you for being a Detour driver! 🚗💚</p>
         """
 
         email_service.send_email(

@@ -7,6 +7,7 @@ from app.subscriptions.schemas import (
     CreatePackageRequest,
     ActivateSubscriptionRequest,
     CancelSubscriptionRequest,
+    SubscriptionUpdateRequest,
 )
 from app.subscriptions.service import subscription_service
 from app.advances.service import advances_service
@@ -43,11 +44,42 @@ async def get_all_packages():
 
 
 # ---------------------------------------------------------
-# User: Activate Subscription
+# User: Get Active Subscription
+# ---------------------------------------------------------
+@router.get("/user/{user_id}", response_model=SuccessResponse)
+async def get_user_subscription(user_id: str):
+    sub = subscription_service.get_active_subscription(user_id)
+    return SuccessResponse(
+        success=True,
+        message="User subscription retrieved",
+        data=sub,
+    )
+
+
+# ---------------------------------------------------------
+# User: Activate Subscription (NO PAYMENT)
 # ---------------------------------------------------------
 @router.post("/activate", response_model=SuccessResponse)
 async def activate_subscription(req: ActivateSubscriptionRequest):
     result = subscription_service.activate_subscription(req.user_id, req.package_id)
+    return SuccessResponse(**result)
+
+
+# ---------------------------------------------------------
+# User: Upgrade Subscription
+# ---------------------------------------------------------
+@router.post("/upgrade", response_model=SuccessResponse)
+async def upgrade_subscription(req: SubscriptionUpdateRequest):
+    result = subscription_service.upgrade_subscription(req.user_id, req.package_id)
+    return SuccessResponse(**result)
+
+
+# ---------------------------------------------------------
+# User: Downgrade Subscription
+# ---------------------------------------------------------
+@router.post("/downgrade", response_model=SuccessResponse)
+async def downgrade_subscription(req: SubscriptionUpdateRequest):
+    result = subscription_service.downgrade_subscription(req.user_id, req.package_id)
     return SuccessResponse(**result)
 
 
