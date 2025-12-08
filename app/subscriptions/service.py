@@ -36,7 +36,7 @@ class SubscriptionService:
         return pkg[0] if pkg else None
 
     # ---------------------------------------------------------
-    # Create Package
+    # Create Subscription Package
     # ---------------------------------------------------------
     def create_package(self, req):
         data = {
@@ -135,7 +135,6 @@ class SubscriptionService:
     # Upgrade Subscription
     # ---------------------------------------------------------
     def upgrade_subscription(self, user_id: str, package_id: str):
-
         active = self.get_active_subscription(user_id)
         if not active:
             return {"success": False, "message": "No active subscription"}
@@ -149,10 +148,10 @@ class SubscriptionService:
         if float(new_pkg["price"]) <= float(current_pkg["price"]):
             return {"success": False, "message": "Not an upgrade"}
 
-        # cancel old sub
+        # Cancel old sub
         self.cancel_subscription(user_id, "upgrade")
 
-        # activate new sub
+        # Activate new sub
         result = self.activate_subscription(user_id, package_id)
 
         self.log_event(user_id, package_id, "upgraded")
@@ -163,7 +162,6 @@ class SubscriptionService:
     # Downgrade Subscription
     # ---------------------------------------------------------
     def downgrade_subscription(self, user_id: str, package_id: str):
-
         active = self.get_active_subscription(user_id)
         if not active:
             return {"success": False, "message": "No active subscription"}
@@ -177,10 +175,10 @@ class SubscriptionService:
         if float(new_pkg["price"]) >= float(current_pkg["price"]):
             return {"success": False, "message": "Not a downgrade"}
 
-        # cancel old sub
+        # Cancel old sub
         self.cancel_subscription(user_id, "downgrade")
 
-        # activate new sub
+        # Activate new sub
         result = self.activate_subscription(user_id, package_id)
 
         self.log_event(user_id, package_id, "downgraded")
@@ -188,7 +186,7 @@ class SubscriptionService:
         return result
 
     # ---------------------------------------------------------
-    # Weekly Billing (Cron)
+    # Weekly Billing (Cron) – FULLY FIXED
     # ---------------------------------------------------------
     def bill_all_users(self):
         subs = database_service.supabase.make_request(
@@ -204,17 +202,29 @@ class SubscriptionService:
             package_id = sub["package_id"]
             amount = float(sub["current_weekly_price"])
 
-            wallet = database_service.get_wallet_by_user_id(user_id)
-            if not wallet:
+            # FIXED WALLET LOOKUP
+            wallet_data = database_service.supabase.make_request(
+                method="GET",
+                endpoint=f"/rest/v1/wallets?user_id=eq.{user_id}",
+                headers=database_service.supabase.service_headers,
+            )
+
+            if not wallet_data:
                 results.append({"user_id": user_id, "status": "missing_wallet"})
                 continue
 
+            wallet = wallet_data[0]
+
+            # ---------------------------------------------------
+            # ENOUGH BALANCE → DEBIT & LOG TRANSACTION
+            # ---------------------------------------------------
             if float(wallet["balance"]) >= amount:
                 updated = {
                     "balance": float(wallet["balance"]) - amount,
                     "last_transaction_at": datetime.utcnow().isoformat(),
                 }
 
+                # Update wallet
                 database_service.supabase.make_request(
                     method="PATCH",
                     endpoint=f"/rest/v1/wallets?id=eq.{wallet['id']}",
@@ -222,11 +232,44 @@ class SubscriptionService:
                     headers=database_service.supabase.service_headers,
                 )
 
+                # Log wallet transaction
+                tx = {
+                    "wallet_id": wallet["id"],
+                    "transaction_type": "payment",
+                    "amount": amount,
+                    "currency": "ZAR",
+                    "reference": f"SUB-{package_id}",
+                    "description": "Weekly subscription billing",
+                    "status": "completed",
+                    "metadata": {"source": "cron", "package_id": package_id},
+                }
+
+                database_service.supabase.make_request(
+                    method="POST",
+                    endpoint="/rest/v1/wallet_transactions",
+                    data=tx,
+                    headers=database_service.supabase.service_headers,
+                )
+
+                # Revenue pool update
                 self.add_to_revenue(amount)
+
+                # Log event
                 self.log_event(user_id, package_id, "weekly_deduction", {"amount": amount})
+
                 results.append({"user_id": user_id, "status": "charged"})
+
+            # ---------------------------------------------------
+            # INSUFFICIENT FUNDS
+            # ---------------------------------------------------
             else:
-                self.log_event(user_id, package_id, "failed_payment", {"reason": "insufficient_funds"})
+                self.log_event(
+                    user_id,
+                    package_id,
+                    "failed_payment",
+                    {"reason": "insufficient_funds"},
+                )
+
                 results.append({"user_id": user_id, "status": "insufficient_funds"})
 
         return results

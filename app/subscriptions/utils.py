@@ -27,7 +27,8 @@ def get_next_friday(from_date: datetime = None):
     if from_date is None:
         from_date = datetime.utcnow()
 
-    # Monday = 0 ... Friday = 4
+    # Monday = 0 ... Sunday = 6
+    # Friday = 4
     days_ahead = 4 - from_date.weekday()
     if days_ahead <= 0:
         days_ahead += 7
@@ -36,7 +37,7 @@ def get_next_friday(from_date: datetime = None):
 
 
 # ---------------------------------------------------------
-# Today Midnight
+# Today's Midnight (UTC)
 # ---------------------------------------------------------
 def today_midnight():
     now = datetime.utcnow()

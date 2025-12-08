@@ -2,7 +2,7 @@
 Subscription Schemas
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
@@ -14,7 +14,7 @@ class CreatePackageRequest(BaseModel):
     price: float
     period: str = "Weekly for 12 Months"
     description: Optional[str] = None
-    benefits: Optional[List[str]] = []
+    benefits: List[str] = Field(default_factory=list)
     weekly_advance_limit: float = 0.0
     advance_percentage: int = 0
     auto_repay_rate: int = 20

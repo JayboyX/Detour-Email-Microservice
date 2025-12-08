@@ -36,6 +36,7 @@ async def get_all_packages():
         endpoint="/rest/v1/subscription_packages?is_active=eq.true&order=price.asc",
         headers=database_service.supabase.anon_headers,
     )
+
     return SuccessResponse(
         success=True,
         message="Subscription packages retrieved",
@@ -49,6 +50,7 @@ async def get_all_packages():
 @router.get("/user/{user_id}", response_model=SuccessResponse)
 async def get_user_subscription(user_id: str):
     sub = subscription_service.get_active_subscription(user_id)
+
     return SuccessResponse(
         success=True,
         message="User subscription retrieved",
@@ -129,7 +131,17 @@ async def get_user_limits(user_id: str):
 # ---------------------------------------------------------
 @router.get("/cron/bill", response_model=SuccessResponse)
 async def run_weekly_billing():
+    """
+    This endpoint is triggered by external CRON (cron-job.org)
+    Runs weekly billing for each active subscription:
+      ✓ Fetch all active subscriptions
+      ✓ Debit wallet if balance is enough
+      ✓ Log wallet transaction
+      ✓ Update revenue pool
+      ✓ Log subscription event
+    """
     results = subscription_service.bill_all_users()
+
     return SuccessResponse(
         success=True,
         message="Weekly billing executed",
