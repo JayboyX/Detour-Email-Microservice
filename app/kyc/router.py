@@ -272,6 +272,95 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
         data={"verified": verified_count, "records": results},
     )
 
+# ---------------------------------------------------------
+# ADMIN — REVOKE KYC (AFTER AUTO-VERIFICATION)
+# ---------------------------------------------------------
+@router.post("/admin/revoke", response_model=SuccessResponse)
+async def revoke_kyc(
+    kyc_id: str,
+    reason: str,
+    background_tasks: BackgroundTasks,
+    admin_id: str = Depends(verify_admin_token),
+):
+    """
+    Revoke a user's KYC after verification.
+    This will:
+      - Set kyc_status = rejected
+      - Set bav_status = failed
+      - Set is_kyc_verified = false
+      - Suspend wallet
+      - Send user email notification
+    """
+
+    # 1️⃣ Load KYC record
+    kyc_record = kyc_service.get_kyc_by_id(kyc_id)
+    if not kyc_record:
+        return SuccessResponse(success=False, message="KYC record not found")
+
+    user_id = kyc_record["user_id"]
+
+    # 2️⃣ Update KYC status to REJECTED
+    updated = kyc_service.update_kyc_status(
+        kyc_id,
+        {
+            "kyc_status": KYCStatus.REJECTED.value,
+            "bav_status": BAVStatus.FAILED.value,
+            "admin_notes": reason,
+        },
+    )
+
+    if not updated:
+        return SuccessResponse(success=False, message="Failed to update KYC record")
+
+    # 3️⃣ Update user → remove verification
+    database_service.supabase.make_request(
+        "PATCH",
+        f"/rest/v1/users?id=eq.{user_id}",
+        {
+            "is_kyc_verified": False,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+        database_service.supabase.service_headers,
+    )
+
+    # 4️⃣ Suspend wallet
+    wallet_data = database_service.supabase.make_request(
+        "GET",
+        f"/rest/v1/wallets?user_id=eq.{user_id}",
+        database_service.supabase.service_headers,
+    )
+
+    if wallet_data:
+        wallet_id = wallet_data[0]["id"]
+
+        database_service.supabase.make_request(
+            "PATCH",
+            f"/rest/v1/wallets?id=eq.{wallet_id}",
+            {"status": "suspended"},
+            database_service.supabase.service_headers,
+        )
+
+    # 5️⃣ Send revocation email
+    user = database_service.get_user_by_id(user_id)
+
+    if user:
+        background_tasks.add_task(
+            email_service.send_kyc_revoked_email,
+            user["email"],
+            user["full_name"],
+            reason,
+        )
+
+    # 6️⃣ Log the action
+    _log_kyc(admin_id, user_id, f"KYC revoked — Reason: {reason}")
+
+    return SuccessResponse(
+        success=True,
+        message="KYC revoked successfully",
+        data={"user_id": user_id, "reason": reason},
+    )
+
+
 
 # ---------------------------------------------------------
 # Internal Helpers
