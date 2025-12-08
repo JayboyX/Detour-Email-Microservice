@@ -4,12 +4,17 @@ KYC Router
 
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+
 from typing import Optional
 
 from app.kyc.service import kyc_service
 from app.kyc.schemas import (
-    KYCSubmitRequest, KYCListResponse, KYCVerifyRequest, KYCStatus
+    KYCSubmitRequest,
+    KYCListResponse,
+    KYCVerifyRequest,
+    KYCStatus,
+    BAVStatus,
 )
 from app.auth.schemas import SuccessResponse
 from app.kyc.admin_auth import verify_admin_token
@@ -23,17 +28,21 @@ router = APIRouter(tags=["kyc"])
 
 
 # ---------------------------------------------------------
-# User KYC Endpoints
+# USER KYC SUBMISSION
 # ---------------------------------------------------------
 @router.post("/submit", response_model=SuccessResponse)
-async def submit_kyc(user_id: str, kyc_data: KYCSubmitRequest, background_tasks: BackgroundTasks):
+async def submit_kyc(
+    user_id: str,
+    kyc_data: KYCSubmitRequest,
+    background_tasks: BackgroundTasks,
+):
     result = kyc_service.submit_kyc(user_id, kyc_data.dict())
 
     if result["success"]:
         return SuccessResponse(
             success=True,
             message=result["message"],
-            data={"kyc_id": result.get("kyc_id")}
+            data={"kyc_id": result.get("kyc_id")},
         )
 
     return SuccessResponse(success=False, message=result["message"])
@@ -50,12 +59,12 @@ async def get_kyc_status(user_id: str):
 
 
 # ---------------------------------------------------------
-# Admin KYC Endpoints
+# ADMIN — LIST KYC
 # ---------------------------------------------------------
 @router.get("/admin/list", response_model=KYCListResponse)
 async def list_all_kyc(
     status: Optional[str] = None,
-    admin_id: str = Depends(verify_admin_token)
+    admin_id: str = Depends(verify_admin_token),
 ):
     kycs = kyc_service.get_all_kyc(status)
     stats = kyc_service.get_kyc_stats()
@@ -65,42 +74,44 @@ async def list_all_kyc(
         pending=stats["pending"],
         verified=stats["verified"],
         rejected=stats["rejected"],
-        kycs=kycs
+        kycs=kycs,
     )
 
 
+# ---------------------------------------------------------
+# ADMIN — GET DETAILS
+# ---------------------------------------------------------
 @router.get("/admin/details/{kyc_id}", response_model=SuccessResponse)
 async def get_kyc_details(
     kyc_id: str,
-    admin_id: str = Depends(verify_admin_token)
+    admin_id: str = Depends(verify_admin_token),
 ):
-    try:
-        endpoint = f"/rest/v1/kyc_information?id=eq.{kyc_id}"
-        response = database_service.supabase.make_request(
-            "GET", endpoint, headers=database_service.supabase.service_headers
-        )
+    endpoint = f"/rest/v1/kyc_information?id=eq.{kyc_id}"
+    response = database_service.supabase.make_request(
+        "GET", endpoint, headers=database_service.supabase.service_headers
+    )
 
-        if not response:
-            return SuccessResponse(success=False, message="KYC not found")
+    if not response:
+        return SuccessResponse(success=False, message="KYC not found")
 
-        kyc = response[0]
-        user = database_service.get_user_by_id(kyc["user_id"])
+    kyc = response[0]
+    user = database_service.get_user_by_id(kyc["user_id"])
 
-        return SuccessResponse(
-            success=True,
-            message="KYC details retrieved",
-            data={"kyc": kyc, "user": user}
-        )
-
-    except Exception as e:
-        return SuccessResponse(success=False, message=str(e))
+    return SuccessResponse(
+        success=True,
+        message="KYC details retrieved",
+        data={"kyc": kyc, "user": user},
+    )
 
 
+# ---------------------------------------------------------
+# ADMIN — VERIFY KYC (MANUAL)
+# ---------------------------------------------------------
 @router.post("/admin/verify", response_model=SuccessResponse)
 async def verify_kyc(
     request: KYCVerifyRequest,
     background_tasks: BackgroundTasks,
-    admin_id: str = Depends(verify_admin_token)
+    admin_id: str = Depends(verify_admin_token),
 ):
     try:
         # Load KYC record
@@ -115,7 +126,7 @@ async def verify_kyc(
         kyc_record = kyc_response[0]
         user_id = kyc_record["user_id"]
 
-        # Update status
+        # Prepare updates
         updates = {
             "kyc_status": request.kyc_status.value,
             "bav_status": request.bav_status.value,
@@ -123,17 +134,19 @@ async def verify_kyc(
             "updated_at": datetime.utcnow().isoformat(),
         }
 
-        if not kyc_service.update_kyc_status(request.kyc_id, updates):
+        # Apply updates
+        updated = kyc_service.update_kyc_status(request.kyc_id, updates)
+        if not updated:
             return SuccessResponse(success=False, message="Failed to update KYC")
 
-        # Verified flow
+        # VERIFIED FLOW -------------------------------------------------------
         if request.kyc_status == KYCStatus.VERIFIED:
-
-            # Mark user verified
-            user_updates = {"is_kyc_verified": True}
-            user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
+            # Update user
             database_service.supabase.make_request(
-                "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
+                "PATCH",
+                f"/rest/v1/users?id=eq.{user_id}",
+                {"is_kyc_verified": True, "updated_at": datetime.utcnow().isoformat()},
+                database_service.supabase.service_headers,
             )
 
             # Create wallet
@@ -142,33 +155,31 @@ async def verify_kyc(
             # Send welcome email
             if wallet_result.get("success"):
                 user = database_service.get_user_by_id(user_id)
-                wallet_number = wallet_result.get("wallet", {}).get("wallet_number")
+                wallet_number = wallet_result["wallet"]["wallet_number"]
 
                 background_tasks.add_task(
                     email_service.send_wallet_welcome_email,
                     user["email"],
                     user["full_name"],
-                    wallet_number
+                    wallet_number,
                 )
 
-            _log_kyc(admin_id, user_id, request.kyc_status.value)
+            _log_kyc(admin_id, user_id, "verified")
 
-        # Rejected flow
+        # REJECTED -------------------------------------------------------------
         elif request.kyc_status == KYCStatus.REJECTED:
-            user_updates = {
-                "is_kyc_verified": False,
-                "updated_at": datetime.utcnow().isoformat()
-            }
-            user_endpoint = f"/rest/v1/users?id=eq.{user_id}"
             database_service.supabase.make_request(
-                "PATCH", user_endpoint, user_updates, database_service.supabase.service_headers
+                "PATCH",
+                f"/rest/v1/users?id=eq.{user_id}",
+                {"is_kyc_verified": False},
+                database_service.supabase.service_headers,
             )
 
-            _log_kyc(admin_id, user_id, request.kyc_status.value)
+            _log_kyc(admin_id, user_id, "rejected")
 
         return SuccessResponse(
             success=True,
-            message=f"KYC {request.kyc_status.value} successfully"
+            message=f"KYC {request.kyc_status.value} successfully",
         )
 
     except Exception as e:
@@ -177,9 +188,91 @@ async def verify_kyc(
 
 
 # ---------------------------------------------------------
+# CRON — AUTO VERIFY EVERY 2 MINUTES
+# ---------------------------------------------------------
+@router.get("/cron/auto-verify", response_model=SuccessResponse)
+async def auto_verify_pending(background_tasks: BackgroundTasks):
+    """
+    This endpoint is hit every 2 minutes by cron-job.org.
+    Logic:
+      - Find KYC with status pending
+      - Only auto-verify if BAV is already verified
+      - Mark user KYC verified
+      - Create wallet
+      - Send welcome email
+    """
+
+    pending_records = database_service.supabase.make_request(
+        "GET",
+        "/rest/v1/kyc_information?kyc_status=eq.pending&bav_status=eq.verified",
+        database_service.supabase.service_headers,
+    )
+
+    if not pending_records:
+        return SuccessResponse(
+            success=True,
+            message="No pending KYC records to auto-verify",
+            data={"verified": 0},
+        )
+
+    verified_count = 0
+    results = []
+
+    for record in pending_records:
+        try:
+            kyc_id = record["id"]
+            user_id = record["user_id"]
+
+            # Update the KYC
+            kyc_service.update_kyc_status(
+                kyc_id,
+                {
+                    "kyc_status": KYCStatus.VERIFIED.value,
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            )
+
+            # Update user profile
+            database_service.supabase.make_request(
+                "PATCH",
+                f"/rest/v1/users?id=eq.{user_id}",
+                {"is_kyc_verified": True},
+                database_service.supabase.service_headers,
+            )
+
+            # Create wallet
+            wallet_result = wallet_service.create_wallet(user_id)
+
+            # Send welcome email
+            if wallet_result.get("success"):
+                user = database_service.get_user_by_id(user_id)
+                wallet_num = wallet_result["wallet"]["wallet_number"]
+
+                background_tasks.add_task(
+                    email_service.send_wallet_welcome_email,
+                    user["email"],
+                    user["full_name"],
+                    wallet_num,
+                )
+
+            results.append({"kyc_id": kyc_id, "user_id": user_id, "status": "verified"})
+            verified_count += 1
+
+        except Exception as e:
+            logger.error(f"Auto-verify failed for KYC {record['id']}: {e}")
+            results.append({"kyc_id": record["id"], "status": "error", "error": str(e)})
+
+    return SuccessResponse(
+        success=True,
+        message="Auto-verification completed",
+        data={"verified": verified_count, "records": results},
+    )
+
+
+# ---------------------------------------------------------
 # Internal Helpers
 # ---------------------------------------------------------
-def _log_kyc(admin_id: str, user_id: str, status: str):
+def _log_kyc(admin_id: Optional[str], user_id: str, status: str):
     entry = {
         "timestamp": datetime.utcnow().isoformat(),
         "admin_id": admin_id,
@@ -189,6 +282,7 @@ def _log_kyc(admin_id: str, user_id: str, status: str):
     try:
         with open("logs/kyc_audit.log", "a") as f:
             import json
+
             f.write(json.dumps(entry) + "\n")
     except Exception as e:
         logger.error(f"Failed to write KYC audit log: {e}")
