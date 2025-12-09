@@ -66,7 +66,7 @@ app.include_router(kyc_router, prefix="/api/kyc")
 app.include_router(wallet_router, prefix="/api/wallet")
 app.include_router(transactions_router, prefix="/api/transactions")
 app.include_router(subscriptions_router, prefix="/api/subscriptions")
-app.include_router(advances_router, prefix="/api/advances")
+app.include_router(advances_router)
 
 
 # ---------------------------------------------------------
