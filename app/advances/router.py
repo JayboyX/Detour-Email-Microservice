@@ -3,7 +3,7 @@ from app.advances.schemas import AdvanceRequest
 from app.advances.service import advances_service
 from app.auth.schemas import SuccessResponse
 
-router = APIRouter(tags=["advances"], prefix="/api/advances")
+router = APIRouter(tags=["advances"])
 
 # -----------------------------------------------------------
 # CHECK AVAILABLE ADVANCE FOR THE USER
