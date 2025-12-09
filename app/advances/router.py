@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.advances.schemas import AdvanceRequest, AutoRepayRun
+from app.advances.schemas import AdvanceRequest
 from app.advances.service import advances_service
 from app.auth.schemas import SuccessResponse
 
@@ -11,8 +11,13 @@ router = APIRouter(tags=["advances"], prefix="/api/advances")
 # -----------------------------------------------------------
 @router.get("/available/{user_id}", response_model=SuccessResponse)
 async def get_available_advance(user_id: str):
-    """Returns weekly_limit, used, performance_limit, and total available."""
-
+    """
+    Returns:
+    - weekly_limit
+    - outstanding balance
+    - available advance (0 if user still owes)
+    - pool_limit
+    """
     result = advances_service.get_available_advance(user_id)
 
     return SuccessResponse(
@@ -23,20 +28,35 @@ async def get_available_advance(user_id: str):
 
 
 # -----------------------------------------------------------
-# FULLY AUTOMATIC ADVANCE — TAKE ADVANCE
+# TAKE ADVANCE — FULLY AUTOMATIC
 # -----------------------------------------------------------
 @router.post("/take", response_model=SuccessResponse)
 async def take_advance(req: AdvanceRequest):
-    """Automatically validates and issues an advance (no approval needed)."""
+    """
+    Auto-issues an advance:
+    - Validates no outstanding advance exists
+    - Checks issuer pool liquidity
+    - Credits wallet
+    - Creates advance record
+    - Deducts from issuer pool automatically
+    """
     result = advances_service.take_advance(req)
     return SuccessResponse(**result)
 
 
 # -----------------------------------------------------------
-# AUTO REPAYMENT (cronjob)
+# AUTO REPAYMENT (WEEKLY CRONJOB)
 # -----------------------------------------------------------
 @router.post("/auto-repay", response_model=SuccessResponse)
 async def auto_repay():
-    """Runs weekly automatic repayment for all active advances."""
+    """
+    Runs weekly automatic repayment:
+    - Calculates fixed weekly repayment = total_amount * repay_rate%
+    - Ensures wallet has enough balance
+    - Deducts repayment from wallet
+    - Updates outstanding balance
+    - Marks advance repaid when outstanding = 0
+    - Returns repayment to issuer pool
+    """
     result = advances_service.auto_repay()
     return SuccessResponse(**result)

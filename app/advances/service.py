@@ -4,7 +4,7 @@ from app.shared.database import database_service
 from app.wallet.service import wallet_service
 from app.transactions.service import transactions_service
 from app.subscriptions.service import subscription_service
-from app.advances.utils import now_iso, weeks_since
+from app.advances.utils import now_iso
 
 
 class AdvancesService:
@@ -22,12 +22,11 @@ class AdvancesService:
         return {
             "weekly_limit": float(pkg["weekly_advance_limit"]),
             "repay_rate": int(pkg["auto_repay_rate"]),
-            "advance_percentage": int(pkg["advance_percentage"]),
         }, None
 
 
     # ------------------------------------------------------
-    # Get outstanding active advances
+    # Get outstanding advances for user
     # ------------------------------------------------------
     def get_outstanding(self, user_id):
         endpoint = f"/rest/v1/user_advances?user_id=eq.{user_id}&status=eq.active"
@@ -38,7 +37,7 @@ class AdvancesService:
 
 
     # ------------------------------------------------------
-    # Compute full availability for UI + logic
+    # Compute true available advance (correct business rules)
     # ------------------------------------------------------
     def get_available_advance(self, user_id):
 
@@ -46,43 +45,41 @@ class AdvancesService:
         if error:
             return {
                 "weekly_limit": 0,
-                "used": 0,
-                "performance_limit": 0,
-                "available": 0
+                "outstanding": 0,
+                "available": 0,
+                "pool_limit": 0
             }
 
         weekly_limit = limits["weekly_limit"]
-        percentage = limits["advance_percentage"]
 
         outstanding = self.get_outstanding(user_id)
-        used = sum(float(x.get("outstanding_amount", 0)) for x in outstanding)
+        total_outstanding = sum(float(x["outstanding_amount"]) for x in outstanding)
 
-        # Remaining weekly package limit
-        limit_remaining = max(0, weekly_limit - used)
+        # RULE 1 — If customer owes ANYTHING, they cannot borrow again.
+        if total_outstanding > 0:
+            return {
+                "weekly_limit": weekly_limit,
+                "outstanding": total_outstanding,
+                "available": 0,
+                "pool_limit": 0
+            }
 
-        # Wallet performance limit
-        wallet = wallet_service.get_wallet_by_user_id(user_id)
-        wallet_balance = float(wallet["balance"]) if wallet else 0
-        performance_limit = wallet_balance * (percentage / 100)
-
-        # Issuer pool limit
+        # RULE 2 — If no outstanding debt, user gets full weekly limit.
         pool = self.get_issuer_pool()
-        pool_limit = float(pool["current_balance"])
+        pool_balance = float(pool["current_balance"])
 
-        # FINAL AVAILABLE
-        available = max(0, min(limit_remaining, performance_limit, pool_limit))
+        available = min(weekly_limit, pool_balance)
 
         return {
             "weekly_limit": weekly_limit,
-            "used": used,
-            "performance_limit": round(performance_limit, 2),
-            "pool_limit": pool_limit,
-            "available": round(available, 2),
+            "outstanding": 0,
+            "available": available,
+            "pool_limit": pool_balance,
         }
 
 
     # ------------------------------------------------------
-    # Internal: Fetch issuer pool (single pool model)
+    # Internal: Get single issuer pool
     # ------------------------------------------------------
     def get_issuer_pool(self):
         res = database_service.supabase.make_request(
@@ -98,30 +95,35 @@ class AdvancesService:
     # ------------------------------------------------------
     def take_advance(self, req):
 
-        # Step 1 - Get eligibility limits
         limits, error = self.get_user_limits(req.user_id)
         if error:
             return error
 
-        # Step 2 - Compute availability
         availability = self.get_available_advance(req.user_id)
         max_available = float(availability["available"])
 
+        # DO NOT ALLOW BORROWING IF ANY OUTSTANDING EXISTS
+        if float(availability["outstanding"]) > 0:
+            return {
+                "success": False,
+                "message": "You must repay your existing advance before taking another."
+            }
+
+        # Ensure amount does not exceed available
         if float(req.amount) > max_available:
             return {
                 "success": False,
-                "message": f"Requested amount exceeds your available advance. Max available: {max_available}"
+                "message": f"Requested amount exceeds your available limit. Max available: {max_available}"
             }
 
-        # Step 3 - Check issuer pool has sufficient funds
+        # Verify pool liquidity
         pool = self.get_issuer_pool()
         pool_balance = float(pool["current_balance"])
-
         if pool_balance < float(req.amount):
             return {"success": False, "message": "Issuer pool has insufficient funds"}
 
         # ------------------------------------------------------
-        # ISSUE ADVANCE AUTOMATICALLY
+        # ISSUE ADVANCE
         # ------------------------------------------------------
 
         # 1. CREDIT WALLET
@@ -130,7 +132,7 @@ class AdvancesService:
                 "user_id": req.user_id,
                 "amount": req.amount,
                 "credit_type": "advance_credit",
-                "description": "Automatic advance credited",
+                "description": "Advance credited",
                 "metadata": {"issuer_pool_id": pool["id"]}
             }
         ))
@@ -150,7 +152,7 @@ class AdvancesService:
             database_service.supabase.service_headers
         )
 
-        # 3. CREATE USER ADVANCE RECORD
+        # 3. CREATE ADVANCE RECORD
         adv = {
             "user_id": req.user_id,
             "issuer_pool_id": pool["id"],
@@ -174,7 +176,7 @@ class AdvancesService:
 
 
     # ------------------------------------------------------
-    # AUTO REPAYMENT ENGINE (weekly cron)
+    # AUTOMATIC WEEKLY REPAYMENT (CORRECT LOGIC)
     # ------------------------------------------------------
     def auto_repay(self):
 
@@ -192,6 +194,7 @@ class AdvancesService:
         for adv in advances:
             user_id = adv["user_id"]
             outstanding = float(adv["outstanding_amount"])
+            total_amount = float(adv["total_amount"])
 
             limits, error = self.get_user_limits(user_id)
             if error:
@@ -199,28 +202,29 @@ class AdvancesService:
 
             repay_rate = limits["repay_rate"]
 
+            # ------------------------------------------------------
+            # CORRECT REPAYMENT FORMULA:
+            # weekly_repay = original amount * repay_rate%
+            # ------------------------------------------------------
+            weekly_repay = total_amount * (repay_rate / 100)
+            repay_amount = min(weekly_repay, outstanding)
+
+            # Check if wallet has the money
             wallet = wallet_service.get_wallet_by_user_id(user_id)
             if not wallet:
                 continue
 
             wallet_balance = float(wallet["balance"])
-            if wallet_balance <= 0:
-                continue
+            if wallet_balance < repay_amount:
+                continue  # cannot repay this week
 
-            # Automatic deduction = repay_rate %
-            repay_amount = round(wallet_balance * (repay_rate / 100), 2)
-            repay_amount = min(repay_amount, outstanding)
-
-            if repay_amount <= 0:
-                continue
-
-            # PROCESS PAYMENT
+            # PROCESS WALLET PAYMENT
             debit = transactions_service.process_payment(type(
                 "obj", (object,), {
                     "user_id": user_id,
                     "amount": Decimal(repay_amount),
                     "payment_type": "advance_repayment",
-                    "description": "Automatic advance repayment",
+                    "description": "Weekly automatic repayment",
                     "metadata": {"advance_id": adv["id"]}
                 }
             ))
@@ -228,42 +232,44 @@ class AdvancesService:
             if not debit["success"]:
                 continue
 
-            # UPDATE ADVANCE RECORD
+            # UPDATE OUTSTANDING BALANCE
             new_outstanding = outstanding - repay_amount
-            status = "repaid" if new_outstanding <= 0 else "active"
+            repaid_status = "repaid" if new_outstanding <= 0 else "active"
 
             database_service.supabase.make_request(
                 "PATCH",
                 f"/rest/v1/user_advances?id=eq.{adv['id']}",
                 {
                     "outstanding_amount": new_outstanding,
-                    "status": status,
+                    "status": repaid_status,
                     "updated_at": now_iso(),
-                    "repaid_at": now_iso() if status == "repaid" else None
+                    "repaid_at": now_iso() if repaid_status == "repaid" else None
                 },
                 database_service.supabase.service_headers
             )
 
-            # RETURN MONEY TO POOL
+            # MONEY RETURNS TO ISSUER POOL
             pool = self.get_issuer_pool()
+            new_pool_balance = float(pool["current_balance"]) + repay_amount
+
             database_service.supabase.make_request(
                 "PATCH",
                 f"/rest/v1/advance_issuer_pool?id=eq.{pool['id']}",
                 {
-                    "current_balance": float(pool["current_balance"]) + repay_amount,
-                    "total_repaid": float(pool["total_repaid"]) + repay_amount
+                    "current_balance": new_pool_balance,
+                    "total_repaid": float(pool["total_repaid"]) + repay_amount,
                 },
                 database_service.supabase.service_headers
             )
 
-            # LOG REPAYMENT
+            # LOG REPAYMENT ENTRY
             database_service.supabase.make_request(
                 "POST",
                 "/rest/v1/advance_repayments",
                 {
                     "user_id": user_id,
                     "advance_id": adv["id"],
-                    "amount": repay_amount
+                    "amount": repay_amount,
                 },
                 database_service.supabase.service_headers
             )
@@ -276,7 +282,7 @@ class AdvancesService:
 
         return {
             "success": True,
-            "message": "Auto repayment cycle completed",
+            "message": "Weekly repayment cycle completed",
             "processed": processed
         }
 
