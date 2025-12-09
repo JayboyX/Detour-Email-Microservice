@@ -55,7 +55,7 @@ class KYCService:
             response = self.supabase.make_request(
                 "GET",
                 f"/rest/v1/kyc_information?user_id=eq.{user_id}",
-                self.supabase.anon_headers,
+                self.supabase.anon_headers,  # CHANGED: Use anon_headers for public access
             )
             return response[0] if response else None
         except Exception as e:
@@ -202,7 +202,7 @@ class KYCService:
             response = self.supabase.make_request(
                 "GET",
                 "/rest/v1/kyc_information?kyc_status=eq.pending",
-                self.supabase.service_headers,
+                self.supabase.anon_headers,  # CHANGED: Use anon_headers for cron access
             )
             return response or []
         except Exception as e:

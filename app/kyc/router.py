@@ -190,9 +190,6 @@ async def verify_kyc(
 # ---------------------------------------------------------
 # CRON — AUTO VERIFY EVERY 2 MINUTES
 # ---------------------------------------------------------
-# ---------------------------------------------------------
-# CRON — AUTO VERIFY EVERY 2 MINUTES (SAFE MODE)
-# ---------------------------------------------------------
 @router.get("/cron/auto-verify", response_model=SuccessResponse)
 async def auto_verify_pending(background_tasks: BackgroundTasks):
     """
@@ -206,10 +203,11 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
     """
 
     try:
+        # FIXED: Use anon_headers instead of service_headers for cron access
         pending_records = database_service.supabase.make_request(
             "GET",
             "/rest/v1/kyc_information?kyc_status=eq.pending",
-            database_service.supabase.service_headers,
+            database_service.supabase.anon_headers,  # CHANGED: anon_headers for public access
         )
     except Exception as e:
         logger.error(f"[AUTO-KYC] Failed fetching pending KYC: {e}")
@@ -248,7 +246,7 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
                 "PATCH",
                 f"/rest/v1/users?id=eq.{user_id}",
                 {"is_kyc_verified": True},
-                database_service.supabase.service_headers,
+                database_service.supabase.service_headers,  # Keep service_headers for write ops
             )
 
             # 3️⃣ Create wallet (safe mode — handles duplicates)
@@ -367,7 +365,6 @@ async def revoke_kyc(
         message="KYC revoked successfully",
         data={"user_id": user_id, "reason": reason},
     )
-
 
 
 # ---------------------------------------------------------
