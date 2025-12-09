@@ -6,104 +6,85 @@ from app.transactions.utils import generate_reference, now_iso
 
 class TransactionsService:
 
-    # ------------------------------------------
-    # INTERNAL UTILITIES
-    # ------------------------------------------
+    # -----------------------------
     def _get_wallet(self, user_id):
         wallet = wallet_service.get_wallet_by_user_id(user_id)
         if not wallet:
             return None, {"success": False, "message": "Wallet not found for user"}
         return wallet, None
 
-    def _create_transaction(self, wallet_id, tx_type, amount, description, ref=None, metadata=None, status="completed"):
-        data = {
-            "wallet_id": wallet_id,
-            "transaction_type": tx_type,
-            "amount": float(amount),
-            "reference": ref or generate_reference(),
-            "description": description,
-            "status": status,
-            "metadata": metadata or {},
-            "created_at": now_iso()
-        }
-
-        saved = database_service.supabase.make_request(
-            "POST",
-            "/rest/v1/wallet_transactions",
-            data,
-            database_service.supabase.service_headers
+    def _log(self, wallet_id, tx_type, amount, description, ref=None, metadata=None):
+        return wallet_service.create_transaction(
+            wallet_id=wallet_id,
+            transaction_type=tx_type,
+            amount=float(amount),
+            description=description,
+            reference=ref or generate_reference(),
+            metadata=metadata or {}
         )
 
-        return saved[0] if saved else None
-
-    # ------------------------------------------
-    # PAYMENT TYPE (wallet deduction)
-    # ------------------------------------------
+    # -----------------------------
+    # PAYMENT = DEBIT
+    # -----------------------------
     def process_payment(self, req):
-
         wallet, error = self._get_wallet(req.user_id)
         if error:
             return error
 
-        # 1. Attempt withdrawal
-        withdraw = wallet_service.withdraw_funds(wallet["id"], float(req.amount))
-        if not withdraw["success"]:
-            return {"success": False, "message": "Insufficient balance"}
+        debit_amount = -abs(float(req.amount))  # negative for debit
 
-        # 2. Log transaction
-        tx = self._create_transaction(
-            wallet_id=wallet["id"],
-            tx_type="payment",
-            amount=req.amount,
-            description=req.description or f"{req.payment_type} payment",
-            ref=req.reference,
-            metadata={"payment_type": req.payment_type, **(req.metadata or {})}
+        result = wallet_service.update_wallet_balance(wallet["id"], debit_amount, "payment")
+        if not result["success"]:
+            return result
+
+        tx = self._log(
+            wallet["id"],
+            "payment",
+            req.amount,
+            req.description or f"{req.payment_type} payment",
+            metadata=req.metadata
         )
 
         return {
             "success": True,
             "message": "Payment successful",
             "transaction": tx,
-            "new_balance": withdraw["new_balance"]
+            "new_balance": result["new_balance"]
         }
 
-    # ------------------------------------------
-    # CREDIT TYPE (wallet top-up: deposits, advance credit)
-    # ------------------------------------------
+    # -----------------------------
+    # CREDIT = DEPOSIT
+    # -----------------------------
     def process_credit(self, req):
-
         wallet, error = self._get_wallet(req.user_id)
         if error:
             return error
 
-        # 1. Deposit funds to wallet
-        deposit = wallet_service.deposit_funds(wallet["id"], float(req.amount))
-        if not deposit["success"]:
-            return deposit
+        credit_amount = abs(float(req.amount))
 
-        # 2. Log transaction
-        tx = self._create_transaction(
-            wallet_id=wallet["id"],
-            tx_type="deposit",
-            amount=req.amount,
-            description=req.description or f"{req.credit_type} credit",
-            ref=req.reference,
-            metadata={"credit_type": req.credit_type, **(req.metadata or {})}
+        result = wallet_service.update_wallet_balance(wallet["id"], credit_amount, "deposit")
+        if not result["success"]:
+            return result
+
+        tx = self._log(
+            wallet["id"],
+            "deposit",
+            req.amount,
+            req.description or f"{req.credit_type} credit",
+            metadata=req.metadata
         )
 
         return {
             "success": True,
             "message": "Credit successful",
             "transaction": tx,
-            "new_balance": deposit["new_balance"]
+            "new_balance": result["new_balance"]
         }
 
-    # ------------------------------------------
-    # TRANSFER BETWEEN TWO USERS
-    # ------------------------------------------
+    # -----------------------------
+    # TRANSFER = DEBIT THEN CREDIT
+    # -----------------------------
     def process_transfer(self, req):
-
-        # Get both wallets
         from_wallet, error = self._get_wallet(req.from_user_id)
         if error:
             return error
@@ -112,41 +93,42 @@ class TransactionsService:
         if error:
             return error
 
-        # 1. Withdraw from sender
-        withdraw = wallet_service.withdraw_funds(from_wallet["id"], float(req.amount))
-        if not withdraw["success"]:
-            return withdraw
+        amt = float(req.amount)
 
-        # 2. Deposit to receiver
-        deposit = wallet_service.deposit_funds(to_wallet["id"], float(req.amount))
-        if not deposit["success"]:
-            return deposit
+        # debit sender
+        debit = wallet_service.update_wallet_balance(from_wallet["id"], -amt, "transfer")
+        if not debit["success"]:
+            return debit
 
-        # 3. Log transactions both sides
-        tx_out = self._create_transaction(
-            wallet_id=from_wallet["id"],
-            tx_type="transfer",
-            amount=req.amount,
-            description=req.description or "Wallet transfer - debit",
+        # credit receiver
+        credit = wallet_service.update_wallet_balance(to_wallet["id"], amt, "transfer")
+        if not credit["success"]:
+            return credit
+
+        # log sender
+        self._log(
+            from_wallet["id"],
+            "transfer",
+            amt,
+            "Wallet transfer - debit",
             metadata={"to_user_id": req.to_user_id}
         )
 
-        tx_in = self._create_transaction(
-            wallet_id=to_wallet["id"],
-            tx_type="transfer",
-            amount=req.amount,
-            description="Wallet transfer - credit",
+        # log receiver
+        self._log(
+            to_wallet["id"],
+            "transfer",
+            amt,
+            "Wallet transfer - credit",
             metadata={"from_user_id": req.from_user_id}
         )
 
         return {
             "success": True,
             "message": "Transfer completed",
-            "transactions": {"sender": tx_out, "receiver": tx_in},
-            "sender_new_balance": withdraw["new_balance"],
-            "receiver_new_balance": deposit["new_balance"]
+            "sender_new_balance": debit["new_balance"],
+            "receiver_new_balance": credit["new_balance"]
         }
 
 
-# Singleton instance
 transactions_service = TransactionsService()
