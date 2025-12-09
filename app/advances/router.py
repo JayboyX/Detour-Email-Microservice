@@ -1,10 +1,5 @@
 from fastapi import APIRouter
-from app.advances.schemas import (
-    AdvanceRequest,
-    ApproveAdvanceRequest,
-    ManualRepaymentRequest,
-    AutoRepayRun
-)
+from app.advances.schemas import AdvanceRequest, AutoRepayRun
 from app.advances.service import advances_service
 from app.auth.schemas import SuccessResponse
 
@@ -16,66 +11,24 @@ router = APIRouter(tags=["advances"], prefix="/api/advances")
 # -----------------------------------------------------------
 @router.get("/available/{user_id}", response_model=SuccessResponse)
 async def get_available_advance(user_id: str):
-    """Returns weekly_limit, used outstanding, and available."""
-    
-    # 1️⃣ Get subscription limits
-    limits, error = advances_service.get_user_limits(user_id)
-    if error:
-        return SuccessResponse(
-            success=False,
-            message=error["message"],
-            data={
-                "weekly_limit": 0,
-                "used": 0,
-                "available": 0
-            }
-        )
+    """Returns weekly_limit, used, performance_limit, and total available."""
 
-    # Extract values safely
-    weekly_limit = float(limits.get("weekly_limit", 0))
-
-    # 2️⃣ Load outstanding safely
-    outstanding = advances_service.get_outstanding(user_id) or []
-    used = sum(float(x.get("outstanding_amount", 0)) for x in outstanding)
-
-    available = max(0, weekly_limit - used)
+    result = advances_service.get_available_advance(user_id)
 
     return SuccessResponse(
         success=True,
         message="Advance availability retrieved",
-        data={
-            "weekly_limit": weekly_limit,
-            "used": used,
-            "available": available,
-        }
+        data=result
     )
 
 
-
 # -----------------------------------------------------------
-# REQUEST ADVANCE (eligibility check only)
+# FULLY AUTOMATIC ADVANCE — TAKE ADVANCE
 # -----------------------------------------------------------
-@router.post("/request", response_model=SuccessResponse)
-async def request_advance(req: AdvanceRequest):
-    result = advances_service.request_advance(req)
-    return SuccessResponse(**result)
-
-
-# -----------------------------------------------------------
-# APPROVE ADVANCE (credit wallet + create record)
-# -----------------------------------------------------------
-@router.post("/approve", response_model=SuccessResponse)
-async def approve_advance(req: ApproveAdvanceRequest):
-    result = advances_service.approve_advance(req)
-    return SuccessResponse(**result)
-
-
-# -----------------------------------------------------------
-# MANUAL REPAYMENT (optional)
-# -----------------------------------------------------------
-@router.post("/repay", response_model=SuccessResponse)
-async def manual_repay(req: ManualRepaymentRequest):
-    result = advances_service.manual_repay(req)
+@router.post("/take", response_model=SuccessResponse)
+async def take_advance(req: AdvanceRequest):
+    """Automatically validates and issues an advance (no approval needed)."""
+    result = advances_service.take_advance(req)
     return SuccessResponse(**result)
 
 
@@ -84,5 +37,6 @@ async def manual_repay(req: ManualRepaymentRequest):
 # -----------------------------------------------------------
 @router.post("/auto-repay", response_model=SuccessResponse)
 async def auto_repay():
+    """Runs weekly automatic repayment for all active advances."""
     result = advances_service.auto_repay()
     return SuccessResponse(**result)
