@@ -4,7 +4,7 @@ from app.shared.database import database_service
 from app.wallet.service import wallet_service
 from app.transactions.service import transactions_service
 from app.subscriptions.service import subscription_service
-from app.advances.utils import now_iso, weeks_since
+from app.advances.utils import now_iso, calculate_repay_amount, weeks_since
 
 
 class AdvancesService:
@@ -23,8 +23,8 @@ class AdvancesService:
             "weekly_limit": float(pkg["weekly_advance_limit"]),
             "repay_rate": int(pkg["auto_repay_rate"]),
             "advance_percentage": int(pkg["advance_percentage"]),
+            "subscription_price": float(pkg["price"]),
         }, None
-
 
     # ------------------------------------------------------
     # Get outstanding active advances
@@ -36,9 +36,8 @@ class AdvancesService:
         )
         return result or []
 
-
     # ------------------------------------------------------
-    # Compute full availability for UI + logic
+    # FULL AVAILABLE ADVANCE CALCULATION
     # ------------------------------------------------------
     def get_available_advance(self, user_id):
 
@@ -57,72 +56,65 @@ class AdvancesService:
         outstanding = self.get_outstanding(user_id)
         used = sum(float(x.get("outstanding_amount", 0)) for x in outstanding)
 
-        # Remaining weekly package limit
+        # Remaining from weekly package limit
         limit_remaining = max(0, weekly_limit - used)
 
-        # Wallet performance limit
+        # Wallet factor * performance percentage
         wallet = wallet_service.get_wallet_by_user_id(user_id)
         wallet_balance = float(wallet["balance"]) if wallet else 0
+
         performance_limit = wallet_balance * (percentage / 100)
 
-        # Issuer pool limit
-        pool = self.get_issuer_pool()
-        pool_limit = float(pool["current_balance"])
-
-        # FINAL AVAILABLE
-        available = max(0, min(limit_remaining, performance_limit, pool_limit))
+        # Final available = min(package_limit_remaining, wallet_performance)
+        available = min(limit_remaining, performance_limit)
 
         return {
             "weekly_limit": weekly_limit,
             "used": used,
             "performance_limit": round(performance_limit, 2),
-            "pool_limit": pool_limit,
             "available": round(available, 2),
         }
 
-
     # ------------------------------------------------------
-    # Internal: Fetch issuer pool (single pool model)
+    # REQUEST ADVANCE — simple eligibility
     # ------------------------------------------------------
-    def get_issuer_pool(self):
-        res = database_service.supabase.make_request(
-            "GET",
-            "/rest/v1/advance_issuer_pool?select=*",
-            headers=database_service.supabase.anon_headers
-        )
-        return res[0]
-
-
-    # ------------------------------------------------------
-    # Fully automatic advance issuing
-    # ------------------------------------------------------
-    def take_advance(self, req):
-
-        # Step 1 - Get eligibility limits
+    def request_advance(self, req):
         limits, error = self.get_user_limits(req.user_id)
         if error:
             return error
 
-        # Step 2 - Compute availability
-        availability = self.get_available_advance(req.user_id)
-        max_available = float(availability["available"])
+        outstanding = self.get_outstanding(req.user_id)
+        used = sum(float(x["outstanding_amount"]) for x in outstanding)
 
-        if float(req.amount) > max_available:
+        if used + float(req.amount) > limits["weekly_limit"]:
             return {
                 "success": False,
-                "message": f"Requested amount exceeds your available advance. Max available: {max_available}"
+                "message": f"Advance limit exceeded. Remaining available: {limits['weekly_limit'] - used}"
             }
 
-        # Step 3 - Check issuer pool has sufficient funds
-        pool = self.get_issuer_pool()
-        pool_balance = float(pool["current_balance"])
+        return {
+            "success": True,
+            "message": "Advance allowed",
+            "available_remaining": limits["weekly_limit"] - used
+        }
 
-        if pool_balance < float(req.amount):
-            return {"success": False, "message": "Issuer pool has insufficient funds"}
+    # ------------------------------------------------------
+    # APPROVE ADVANCE
+    # ------------------------------------------------------
+    def approve_advance(self, req):
 
-        # ------------------------------------------------------
-        # ISSUE ADVANCE AUTOMATICALLY
-        # ------------------------------------------------------
+        pool_res = database_service.supabase.make_request(
+            "GET",
+            f"/rest/v1/advance_issuer_pool?id=eq.{req.issuer_pool_id}",
+            headers=database_service.supabase.anon_headers
+        )
+
+        if not pool_res:
+            return {"success": False, "message": "Issuer pool not found"}
+
+        pool = pool_res[0]
+        if float(pool["current_balance"]) < float(req.amount):
+            return {"success": False, "message": "Issuer pool insufficient"}
 
         # 1. CREDIT WALLET
         credit = transactions_service.process_credit(type(
@@ -130,27 +122,29 @@ class AdvancesService:
                 "user_id": req.user_id,
                 "amount": req.amount,
                 "credit_type": "advance_credit",
-                "description": "Automatic advance credited",
-                "metadata": {"issuer_pool_id": pool["id"]}
+                "description": "Advance credited to wallet",
+                "reference": getattr(req, "reference", None),
+                "metadata": {"issuer_pool_id": req.issuer_pool_id}
             }
         ))
+
 
         if not credit["success"]:
             return credit
 
-        # 2. UPDATE POOL (deduct lent amount)
+        # 2. UPDATE POOL
         database_service.supabase.make_request(
             "PATCH",
             f"/rest/v1/advance_issuer_pool?id=eq.{pool['id']}",
             {
-                "current_balance": pool_balance - float(req.amount),
+                "current_balance": float(pool["current_balance"]) - float(req.amount),
                 "total_lent": float(pool["total_lent"]) + float(req.amount),
                 "updated_at": now_iso()
             },
             database_service.supabase.service_headers
         )
 
-        # 3. CREATE USER ADVANCE RECORD
+        # 3. CREATE ADVANCE RECORD
         adv = {
             "user_id": req.user_id,
             "issuer_pool_id": pool["id"],
@@ -172,9 +166,47 @@ class AdvancesService:
             "advance": created[0]
         }
 
+    # ------------------------------------------------------
+    # WEEKLY SUBSCRIPTION FEE COLLECTION
+    # ------------------------------------------------------
+    def collect_subscription_fee(self, user_id, fee_amount):
+
+        debit = transactions_service.process_payment(type(
+            "obj", (object,), {
+                "user_id": user_id,
+                "amount": Decimal(fee_amount),
+                "payment_type": "subscription_weekly_fee",
+                "description": "Weekly subscription fee",
+                "metadata": {}
+            }
+        ))
+
+        if not debit["success"]:
+            return {"success": False, "message": "Insufficient wallet funds"}
+
+        # Push to Detour revenue pool
+        pool = database_service.supabase.make_request(
+            "GET",
+            "/rest/v1/detour_revenue_pool",
+            headers=database_service.supabase.anon_headers
+        )[0]
+
+        updated_total = float(pool["total_collected"]) + float(fee_amount)
+
+        database_service.supabase.make_request(
+            "PATCH",
+            f"/rest/v1/detour_revenue_pool?id=eq.{pool['id']}",
+            {
+                "total_collected": updated_total,
+                "last_updated": now_iso()
+            },
+            database_service.supabase.service_headers
+        )
+
+        return {"success": True}
 
     # ------------------------------------------------------
-    # AUTO REPAYMENT ENGINE (weekly cron)
+    # AUTO REPAY + SUBSCRIPTION FEE
     # ------------------------------------------------------
     def auto_repay(self):
 
@@ -198,6 +230,10 @@ class AdvancesService:
                 continue
 
             repay_rate = limits["repay_rate"]
+            subscription_fee = limits["subscription_price"]
+
+            # STEP 1: Subscription fee
+            self.collect_subscription_fee(user_id, subscription_fee)
 
             wallet = wallet_service.get_wallet_by_user_id(user_id)
             if not wallet:
@@ -207,14 +243,17 @@ class AdvancesService:
             if wallet_balance <= 0:
                 continue
 
-            # Automatic deduction = repay_rate %
-            repay_amount = round(wallet_balance * (repay_rate / 100), 2)
-            repay_amount = min(repay_amount, outstanding)
+            # STEP 2: Compute repayment amount
+            standard_repay = wallet_balance * (repay_rate / 100)
 
-            if repay_amount <= 0:
-                continue
+            age_weeks = weeks_since(adv["created_at"])
+            weeks_left = max(1, 4 - age_weeks)
 
-            # PROCESS PAYMENT
+            required_repay = outstanding / weeks_left
+
+            repay_amount = min(max(standard_repay, required_repay), outstanding)
+
+            # STEP 3: Process repayment
             debit = transactions_service.process_payment(type(
                 "obj", (object,), {
                     "user_id": user_id,
@@ -228,7 +267,6 @@ class AdvancesService:
             if not debit["success"]:
                 continue
 
-            # UPDATE ADVANCE RECORD
             new_outstanding = outstanding - repay_amount
             status = "repaid" if new_outstanding <= 0 else "active"
 
@@ -244,8 +282,13 @@ class AdvancesService:
                 database_service.supabase.service_headers
             )
 
-            # RETURN MONEY TO POOL
-            pool = self.get_issuer_pool()
+            # STEP 4: Return repayment to issuer pool
+            pool = database_service.supabase.make_request(
+                "GET",
+                f"/rest/v1/advance_issuer_pool?id=eq.{adv['issuer_pool_id']}",
+                headers=database_service.supabase.anon_headers
+            )[0]
+
             database_service.supabase.make_request(
                 "PATCH",
                 f"/rest/v1/advance_issuer_pool?id=eq.{pool['id']}",
@@ -256,7 +299,7 @@ class AdvancesService:
                 database_service.supabase.service_headers
             )
 
-            # LOG REPAYMENT
+            # Log repayment
             database_service.supabase.make_request(
                 "POST",
                 "/rest/v1/advance_repayments",
@@ -276,9 +319,44 @@ class AdvancesService:
 
         return {
             "success": True,
-            "message": "Auto repayment cycle completed",
+            "message": "Auto repayment + subscription fee cycle completed",
             "processed": processed
         }
+    
+def get_true_earnings(self, user_id):
+    """Return total earnings excluding advance credits."""
+    
+    wallet = wallet_service.get_wallet_by_user_id(user_id)
+    if not wallet:
+        return 0
+
+    wallet_id = wallet["id"]
+
+    # Fetch all DEPOSITS
+    txs = database_service.supabase.make_request(
+        "GET",
+        f"/rest/v1/wallet_transactions?wallet_id=eq.{wallet_id}&transaction_type=eq.deposit",
+        headers=database_service.supabase.anon_headers
+    ) or []
+
+    total_deposits = 0
+    total_advance_credits = 0
+
+    for tx in txs:
+        amount = float(tx.get("amount", 0))
+
+        # Check if this deposit is an advance credit
+        meta = tx.get("metadata", {})
+        credit_type = meta.get("credit_type")
+
+        if credit_type == "advance_credit":
+            total_advance_credits += amount
+        else:
+            total_deposits += amount
+
+    # True earnings = all deposits except advance credits
+    return total_deposits
+
 
 
 advances_service = AdvancesService()

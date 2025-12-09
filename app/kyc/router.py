@@ -190,49 +190,60 @@ async def verify_kyc(
 # ---------------------------------------------------------
 # CRON — AUTO VERIFY EVERY 2 MINUTES
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# CRON — AUTO VERIFY EVERY 2 MINUTES (SAFE MODE)
+# ---------------------------------------------------------
 @router.get("/cron/auto-verify", response_model=SuccessResponse)
 async def auto_verify_pending(background_tasks: BackgroundTasks):
     """
-    This endpoint is hit every 2 minutes by cron-job.org.
-    Logic:
-      - Find KYC with status pending
-      - Only auto-verify if BAV is already verified
-      - Mark user KYC verified
-      - Create wallet
-      - Send welcome email
+    Auto-verify all KYC submissions every 2 minutes.
+    Fully automated KYC verification:
+        - pending → verified
+        - bav_status → verified
+        - user.is_kyc_verified → true
+        - wallet created if not exists
+        - welcome email sent
     """
 
-    pending_records = database_service.supabase.make_request(
-        "GET",
-        "/rest/v1/kyc_information?kyc_status=eq.pending&bav_status=eq.verified",
-        database_service.supabase.service_headers,
-    )
+    try:
+        pending_records = database_service.supabase.make_request(
+            "GET",
+            "/rest/v1/kyc_information?kyc_status=eq.pending",
+            database_service.supabase.service_headers,
+        )
+    except Exception as e:
+        logger.error(f"[AUTO-KYC] Failed fetching pending KYC: {e}")
+        return SuccessResponse(success=False, message="Failed to read records")
 
     if not pending_records:
         return SuccessResponse(
             success=True,
-            message="No pending KYC records to auto-verify",
-            data={"verified": 0},
+            message="No pending KYC to auto-verify",
+            data={"verified": 0, "records": []},
         )
 
-    verified_count = 0
     results = []
+    verified_count = 0
 
     for record in pending_records:
-        try:
-            kyc_id = record["id"]
-            user_id = record["user_id"]
+        kyc_id = record.get("id")
+        user_id = record.get("user_id")
 
-            # Update the KYC
+        try:
+            if not user_id:
+                results.append({"kyc_id": kyc_id, "status": "error", "error": "missing_user_id"})
+                continue
+
+            # 1️⃣ Mark KYC verified
             kyc_service.update_kyc_status(
                 kyc_id,
                 {
-                    "kyc_status": KYCStatus.VERIFIED.value,
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "kyc_status": "verified",
+                    "bav_status": "verified",
                 },
             )
 
-            # Update user profile
+            # 2️⃣ Mark user verified
             database_service.supabase.make_request(
                 "PATCH",
                 f"/rest/v1/users?id=eq.{user_id}",
@@ -240,33 +251,123 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
                 database_service.supabase.service_headers,
             )
 
-            # Create wallet
-            wallet_result = wallet_service.create_wallet(user_id)
-
-            # Send welcome email
-            if wallet_result.get("success"):
-                user = database_service.get_user_by_id(user_id)
-                wallet_num = wallet_result["wallet"]["wallet_number"]
-
-                background_tasks.add_task(
-                    email_service.send_wallet_welcome_email,
-                    user["email"],
-                    user["full_name"],
-                    wallet_num,
-                )
+            # 3️⃣ Create wallet (safe mode — handles duplicates)
+            wallet = database_service.get_wallet_by_user_id(user_id)
+            if not wallet:
+                wallet_result = wallet_service.create_wallet(user_id)
+                if wallet_result.get("success"):
+                    user = database_service.get_user_by_id(user_id)
+                    wallet_number = wallet_result["wallet"]["wallet_number"]
+                    background_tasks.add_task(
+                        email_service.send_wallet_welcome_email,
+                        user["email"],
+                        user["full_name"],
+                        wallet_number,
+                    )
 
             results.append({"kyc_id": kyc_id, "user_id": user_id, "status": "verified"})
             verified_count += 1
 
         except Exception as e:
-            logger.error(f"Auto-verify failed for KYC {record['id']}: {e}")
-            results.append({"kyc_id": record["id"], "status": "error", "error": str(e)})
+            logger.error(f"[AUTO-KYC] Error verifying KYC {kyc_id}: {e}")
+            results.append({"kyc_id": kyc_id, "status": "error", "error": str(e)})
+            continue
 
     return SuccessResponse(
         success=True,
         message="Auto-verification completed",
         data={"verified": verified_count, "records": results},
     )
+
+
+# ---------------------------------------------------------
+# ADMIN — REVOKE KYC (AFTER AUTO-VERIFICATION)
+# ---------------------------------------------------------
+@router.post("/admin/revoke", response_model=SuccessResponse)
+async def revoke_kyc(
+    kyc_id: str,
+    reason: str,
+    background_tasks: BackgroundTasks,
+    admin_id: str = Depends(verify_admin_token),
+):
+    """
+    Revoke a user's KYC after verification.
+    This will:
+      - Set kyc_status = rejected
+      - Set bav_status = failed
+      - Set is_kyc_verified = false
+      - Suspend wallet
+      - Send user email notification
+    """
+
+    # 1️⃣ Load KYC record
+    kyc_record = kyc_service.get_kyc_by_id(kyc_id)
+    if not kyc_record:
+        return SuccessResponse(success=False, message="KYC record not found")
+
+    user_id = kyc_record["user_id"]
+
+    # 2️⃣ Update KYC status to REJECTED
+    updated = kyc_service.update_kyc_status(
+        kyc_id,
+        {
+            "kyc_status": KYCStatus.REJECTED.value,
+            "bav_status": BAVStatus.FAILED.value,
+            "admin_notes": reason,
+        },
+    )
+
+    if not updated:
+        return SuccessResponse(success=False, message="Failed to update KYC record")
+
+    # 3️⃣ Update user → remove verification
+    database_service.supabase.make_request(
+        "PATCH",
+        f"/rest/v1/users?id=eq.{user_id}",
+        {
+            "is_kyc_verified": False,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+        database_service.supabase.service_headers,
+    )
+
+    # 4️⃣ Suspend wallet
+    wallet_data = database_service.supabase.make_request(
+        "GET",
+        f"/rest/v1/wallets?user_id=eq.{user_id}",
+        database_service.supabase.service_headers,
+    )
+
+    if wallet_data:
+        wallet_id = wallet_data[0]["id"]
+
+        database_service.supabase.make_request(
+            "PATCH",
+            f"/rest/v1/wallets?id=eq.{wallet_id}",
+            {"status": "suspended"},
+            database_service.supabase.service_headers,
+        )
+
+    # 5️⃣ Send revocation email
+    user = database_service.get_user_by_id(user_id)
+
+    if user:
+        background_tasks.add_task(
+            email_service.send_kyc_revoked_email,
+            user["email"],
+            user["full_name"],
+            reason,
+        )
+
+    # 6️⃣ Log the action
+    _log_kyc(admin_id, user_id, f"KYC revoked — Reason: {reason}")
+
+    return SuccessResponse(
+        success=True,
+        message="KYC revoked successfully",
+        data={"user_id": user_id, "reason": reason},
+    )
+
 
 
 # ---------------------------------------------------------

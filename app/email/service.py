@@ -238,6 +238,33 @@ class EmailService:
         print("="*60 + "\n")
 
         return True
+    
+    def send_kyc_revoked_email(self, to_email, full_name, reason):
+        subject = "Your Detour KYC Has Been Revoked"
+
+        html_content = f"""
+        <h2>KYC Status Update</h2>
+
+        <p>Hello {full_name},</p>
+
+        <p>Your KYC has been <strong>revoked</strong> after a manual review of your documents.</p>
+
+        <p><strong>Reason:</strong> {reason}</p>
+
+        <p>
+        To restore your KYC status and access your wallet again,
+        please resubmit corrected or valid documentation in the mobile app.
+        </p>
+
+        <p>
+        If you believe this was an error, please reply to this email for support.
+        </p>
+
+        <p>Regards,<br/>Detour Compliance Team</p>
+        """
+
+        self.send_email(to_email, subject, html_content)
+
 
     
     def _create_wallet_welcome_html(self, user_name: str, wallet_number: str) -> str:
