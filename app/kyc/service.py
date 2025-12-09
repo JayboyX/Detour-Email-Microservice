@@ -202,12 +202,11 @@ class KYCService:
             response = self.supabase.make_request(
                 "GET",
                 "/rest/v1/kyc_information?kyc_status=eq.pending",
-                self.supabase.anon_headers,  # CHANGED: Use anon_headers for cron access
+                self.supabase.service_headers,  # CHANGED TO service_headers
             )
             return response or []
         except Exception as e:
             logger.error(f"[KYC] Auto verify fetch error: {e}")
             return []
-
 
 kyc_service = KYCService()
