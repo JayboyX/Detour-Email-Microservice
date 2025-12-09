@@ -188,94 +188,130 @@ async def verify_kyc(
 
 
 # ---------------------------------------------------------
-# CRON — AUTO VERIFY EVERY 2 MINUTES
+# SIMPLE CRON — NO AUTH REQUIRED
 # ---------------------------------------------------------
-@router.get("/cron/auto-verify", response_model=SuccessResponse)
-async def auto_verify_pending(background_tasks: BackgroundTasks):
+@router.get("/cron/simple-auto-verify", response_model=SuccessResponse)
+async def simple_auto_verify():
     """
-    Auto-verify all KYC submissions every 2 minutes.
-    Fully automated KYC verification:
-        - pending → verified
-        - bav_status → verified
-        - user.is_kyc_verified → true
-        - wallet created if not exists
-        - welcome email sent
+    Ultra-simple cron endpoint that auto-verifies all pending KYC
+    Uses direct Supabase client instead of custom headers
     """
-
     try:
-        # FIXED: Use anon_headers instead of service_headers for cron access
-        pending_records = database_service.supabase.make_request(
-            "GET",
-            "/rest/v1/kyc_information?kyc_status=eq.pending",
-            database_service.supabase.anon_headers,  # CHANGED: anon_headers for public access
-        )
-    except Exception as e:
-        logger.error(f"[AUTO-KYC] Failed fetching pending KYC: {e}")
-        return SuccessResponse(success=False, message="Failed to read records")
-
-    if not pending_records:
+        # Get the supabase client directly
+        supabase = database_service.supabase.client
+        
+        # Fetch pending KYC records
+        response = supabase.table("kyc_information") \
+            .select("*") \
+            .eq("kyc_status", "pending") \
+            .execute()
+        
+        pending_records = response.data
+        
+        if not pending_records:
+            return SuccessResponse(
+                success=True,
+                message="No pending KYC to auto-verify",
+                data={"verified": 0}
+            )
+        
+        verified_count = 0
+        results = []
+        
+        for record in pending_records:
+            kyc_id = record.get("id")
+            user_id = record.get("user_id")
+            
+            try:
+                if not user_id:
+                    logger.error(f"[CRON] Missing user_id for KYC {kyc_id}")
+                    continue
+                
+                # 1️⃣ Mark KYC as verified
+                supabase.table("kyc_information") \
+                    .update({
+                        "kyc_status": "verified",
+                        "bav_status": "verified",
+                        "updated_at": datetime.utcnow().isoformat()
+                    }) \
+                    .eq("id", kyc_id) \
+                    .execute()
+                
+                # 2️⃣ Mark user as verified
+                supabase.table("users") \
+                    .update({
+                        "is_kyc_verified": True,
+                        "updated_at": datetime.utcnow().isoformat()
+                    }) \
+                    .eq("id", user_id) \
+                    .execute()
+                
+                # 3️⃣ Check if wallet exists
+                wallet_response = supabase.table("wallets") \
+                    .select("*") \
+                    .eq("user_id", user_id) \
+                    .execute()
+                
+                # 4️⃣ Create wallet if doesn't exist
+                if not wallet_response.data:
+                    wallet_result = wallet_service.create_wallet(user_id)
+                    if wallet_result.get("success"):
+                        # Get user email for welcome email
+                        user_response = supabase.table("users") \
+                            .select("email, full_name") \
+                            .eq("id", user_id) \
+                            .execute()
+                        
+                        if user_response.data:
+                            user = user_response.data[0]
+                            wallet_number = wallet_result["wallet"]["wallet_number"]
+                            # Send welcome email in background
+                            import asyncio
+                            asyncio.create_task(
+                                email_service.send_wallet_welcome_email(
+                                    user["email"],
+                                    user["full_name"],
+                                    wallet_number
+                                )
+                            )
+                
+                verified_count += 1
+                results.append({
+                    "kyc_id": kyc_id,
+                    "user_id": user_id,
+                    "status": "verified"
+                })
+                
+                logger.info(f"[CRON] Auto-verified KYC {kyc_id} for user {user_id}")
+                
+            except Exception as e:
+                logger.error(f"[CRON] Error verifying KYC {kyc_id}: {e}")
+                results.append({
+                    "kyc_id": kyc_id,
+                    "status": "error",
+                    "error": str(e)[:100]
+                })
+                continue
+        
+        logger.info(f"[CRON] Completed. Verified {verified_count} KYC records")
+        
         return SuccessResponse(
             success=True,
-            message="No pending KYC to auto-verify",
-            data={"verified": 0, "records": []},
+            message=f"Auto-verified {verified_count} KYC records",
+            data={
+                "verified": verified_count,
+                "total_pending": len(pending_records),
+                "results": results
+            }
         )
-
-    results = []
-    verified_count = 0
-
-    for record in pending_records:
-        kyc_id = record.get("id")
-        user_id = record.get("user_id")
-
-        try:
-            if not user_id:
-                results.append({"kyc_id": kyc_id, "status": "error", "error": "missing_user_id"})
-                continue
-
-            # 1️⃣ Mark KYC verified
-            kyc_service.update_kyc_status(
-                kyc_id,
-                {
-                    "kyc_status": "verified",
-                    "bav_status": "verified",
-                },
-            )
-
-            # 2️⃣ Mark user verified
-            database_service.supabase.make_request(
-                "PATCH",
-                f"/rest/v1/users?id=eq.{user_id}",
-                {"is_kyc_verified": True},
-                database_service.supabase.service_headers,  # Keep service_headers for write ops
-            )
-
-            # 3️⃣ Create wallet (safe mode — handles duplicates)
-            wallet = database_service.get_wallet_by_user_id(user_id)
-            if not wallet:
-                wallet_result = wallet_service.create_wallet(user_id)
-                if wallet_result.get("success"):
-                    user = database_service.get_user_by_id(user_id)
-                    wallet_number = wallet_result["wallet"]["wallet_number"]
-                    background_tasks.add_task(
-                        email_service.send_wallet_welcome_email,
-                        user["email"],
-                        user["full_name"],
-                        wallet_number,
-                    )
-
-            results.append({"kyc_id": kyc_id, "user_id": user_id, "status": "verified"})
-            verified_count += 1
-
-        except Exception as e:
-            logger.error(f"[AUTO-KYC] Error verifying KYC {kyc_id}: {e}")
-            results.append({"kyc_id": kyc_id, "status": "error", "error": str(e)})
-            continue
-
-    return SuccessResponse(
-        success=True,
-        message="Auto-verification completed",
-        data={"verified": verified_count, "records": results},
-    )
+        
+    except Exception as e:
+        logger.error(f"[CRON] Failed to run auto-verify: {e}")
+        return SuccessResponse(
+            success=False,
+            message=f"Cron failed: {str(e)[:100]}",
+            data={"error": str(e)}
+        )
 
 
 # ---------------------------------------------------------
