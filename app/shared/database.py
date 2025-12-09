@@ -40,6 +40,8 @@ class SupabaseClient:
         
         try:
             if method == "GET":
+                # For GET requests, 'data' should be query parameters
+                # Headers should be passed separately
                 response = requests.get(url, headers=headers, params=data)
             elif method == "POST":
                 response = requests.post(url, headers=headers, json=data)
@@ -49,23 +51,28 @@ class SupabaseClient:
                 raise ValueError(f"Unsupported method: {method}")
             
             response.raise_for_status()
-            return response.json() if response.content else {}
+            
+            # Handle empty response
+            if response.status_code == 204 or not response.content:
+                return []
+            
+            return response.json()
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Supabase request failed: {e}")
+            logger.error(f"Supabase request failed: {e} | URL: {url}")
             raise
     
     # User operations
     def insert_user(self, user_data, use_service_key=True):
         endpoint = "/rest/v1/users"
         headers = self.service_headers if use_service_key else self.anon_headers
-        return self.make_request("POST", endpoint, user_data, headers)
+        return self.make_request("POST", endpoint, user_data, headers=headers)
     
     def get_user_by_email(self, email, use_service_key=False):
         endpoint = "/rest/v1/users"
         params = {"email": f"eq.{email}"}
         headers = self.service_headers if use_service_key else self.anon_headers
-        response = self.make_request("GET", endpoint, params, headers)
+        response = self.make_request("GET", endpoint, data=params, headers=headers)
         return response[0] if response else None
     
     def get_user_by_id(self, user_id, use_service_key=False):
@@ -77,13 +84,13 @@ class SupabaseClient:
     def update_user(self, user_id, updates, use_service_key=True):
         endpoint = f"/rest/v1/users?id=eq.{user_id}"
         headers = self.service_headers if use_service_key else self.anon_headers
-        return self.make_request("PATCH", endpoint, updates, headers)
+        return self.make_request("PATCH", endpoint, updates, headers=headers)
     
     def check_email_exists(self, email, use_service_key=False):
         endpoint = "/rest/v1/users"
         params = {"email": f"eq.{email}", "select": "id"}
         headers = self.service_headers if use_service_key else self.anon_headers
-        response = self.make_request("GET", endpoint, params, headers)
+        response = self.make_request("GET", endpoint, data=params, headers=headers)
         return len(response) > 0
 
 # ========== Database Service ==========
@@ -173,6 +180,16 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error checking email existence: {e}")
             return False
+
+    def get_wallet_by_user_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get wallet by user ID"""
+        try:
+            endpoint = f"/rest/v1/wallets?user_id=eq.{user_id}"
+            response = self.supabase.make_request("GET", endpoint, headers=self.supabase.service_headers)
+            return response[0] if response else None
+        except Exception as e:
+            logger.error(f"Error getting wallet by user ID: {e}")
+            return None
 
 # Create global instances
 supabase_client = SupabaseClient()

@@ -147,7 +147,7 @@ async def verify_kyc(
                 "PATCH",
                 f"/rest/v1/users?id=eq.{user_id}",
                 {"is_kyc_verified": True, "updated_at": datetime.utcnow().isoformat()},
-                database_service.supabase.service_headers,
+                headers=database_service.supabase.service_headers,
             )
 
             # Create wallet
@@ -173,7 +173,7 @@ async def verify_kyc(
                 "PATCH",
                 f"/rest/v1/users?id=eq.{user_id}",
                 {"is_kyc_verified": False},
-                database_service.supabase.service_headers,
+                headers=database_service.supabase.service_headers,
             )
 
             _log_kyc(admin_id, user_id, "rejected")
@@ -188,9 +188,6 @@ async def verify_kyc(
         return SuccessResponse(success=False, message=str(e))
 
 
-# ---------------------------------------------------------
-# SIMPLE CRON — NO AUTH REQUIRED
-# ---------------------------------------------------------
 # ---------------------------------------------------------
 # CRON — AUTO VERIFY EVERY 2 MINUTES (FIXED)
 # ---------------------------------------------------------
@@ -207,11 +204,11 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
     """
 
     try:
-        # FIX: Use service_headers (admin access) instead of anon_headers
+        # FIXED: Pass headers with headers= keyword
         pending_records = database_service.supabase.make_request(
             "GET",
             "/rest/v1/kyc_information?kyc_status=eq.pending",
-            database_service.supabase.service_headers,  # CHANGED TO service_headers
+            headers=database_service.supabase.service_headers,
         )
     except Exception as e:
         logger.error(f"[AUTO-KYC] Failed fetching pending KYC: {e}")
@@ -250,7 +247,7 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
                 "PATCH",
                 f"/rest/v1/users?id=eq.{user_id}",
                 {"is_kyc_verified": True},
-                database_service.supabase.service_headers,  # Already using service_headers
+                headers=database_service.supabase.service_headers,
             )
 
             # 3️⃣ Create wallet (safe mode — handles duplicates)
@@ -281,6 +278,7 @@ async def auto_verify_pending(background_tasks: BackgroundTasks):
         data={"verified": verified_count, "records": results},
     )
 
+
 @router.get("/cron/debug", response_model=SuccessResponse)
 async def debug_cron():
     """Debug endpoint to check Supabase connection"""
@@ -289,14 +287,14 @@ async def debug_cron():
         test_response = database_service.supabase.make_request(
             "GET",
             "/rest/v1/kyc_information?limit=1",
-            database_service.supabase.service_headers,
+            headers=database_service.supabase.service_headers,
         )
         
         # Test with anon headers  
         test_response_anon = database_service.supabase.make_request(
             "GET", 
             "/rest/v1/kyc_information?limit=1",
-            database_service.supabase.anon_headers,
+            headers=database_service.supabase.anon_headers,
         )
         
         return SuccessResponse(
@@ -364,14 +362,14 @@ async def revoke_kyc(
             "is_kyc_verified": False,
             "updated_at": datetime.utcnow().isoformat(),
         },
-        database_service.supabase.service_headers,
+        headers=database_service.supabase.service_headers,
     )
 
     # 4️⃣ Suspend wallet
     wallet_data = database_service.supabase.make_request(
         "GET",
         f"/rest/v1/wallets?user_id=eq.{user_id}",
-        database_service.supabase.service_headers,
+        headers=database_service.supabase.service_headers,
     )
 
     if wallet_data:
@@ -381,7 +379,7 @@ async def revoke_kyc(
             "PATCH",
             f"/rest/v1/wallets?id=eq.{wallet_id}",
             {"status": "suspended"},
-            database_service.supabase.service_headers,
+            headers=database_service.supabase.service_headers,
         )
 
     # 5️⃣ Send revocation email

@@ -34,7 +34,7 @@ class KYCService:
                 "POST",
                 "/rest/v1/kyc_information",
                 record,
-                self.supabase.service_headers,
+                headers=self.supabase.service_headers,
             )
 
             return {
@@ -55,7 +55,7 @@ class KYCService:
             response = self.supabase.make_request(
                 "GET",
                 f"/rest/v1/kyc_information?user_id=eq.{user_id}",
-                self.supabase.anon_headers,  # CHANGED: Use anon_headers for public access
+                headers=self.supabase.anon_headers,
             )
             return response[0] if response else None
         except Exception as e:
@@ -67,7 +67,7 @@ class KYCService:
             response = self.supabase.make_request(
                 "GET",
                 f"/rest/v1/kyc_information?id=eq.{kyc_id}",
-                self.supabase.service_headers,
+                headers=self.supabase.service_headers,
             )
             return response[0] if response else None
         except Exception as e:
@@ -83,7 +83,7 @@ class KYCService:
             response = self.supabase.make_request(
                 "GET",
                 endpoint,
-                self.supabase.service_headers,
+                headers=self.supabase.service_headers,
             )
             return response or []
         except Exception as e:
@@ -101,7 +101,7 @@ class KYCService:
                 "PATCH",
                 f"/rest/v1/kyc_information?id=eq.{kyc_id}",
                 updates,
-                self.supabase.service_headers,
+                headers=self.supabase.service_headers,
             )
             return bool(response)
 
@@ -148,14 +148,14 @@ class KYCService:
                 "PATCH",
                 f"/rest/v1/users?id=eq.{user_id}",
                 {"is_kyc_verified": False},
-                self.supabase.service_headers,
+                headers=self.supabase.service_headers,
             )
 
             # 4️⃣ Suspend wallet (if exists)
             wallet_data = self.supabase.make_request(
                 "GET",
                 f"/rest/v1/wallets?user_id=eq.{user_id}",
-                self.supabase.service_headers,
+                headers=self.supabase.service_headers,
             )
 
             if wallet_data:
@@ -165,7 +165,7 @@ class KYCService:
                     "PATCH",
                     f"/rest/v1/wallets?id=eq.{wallet_id}",
                     {"status": "suspended"},
-                    self.supabase.service_headers,
+                    headers=self.supabase.service_headers,
                 )
 
             return {
@@ -202,11 +202,12 @@ class KYCService:
             response = self.supabase.make_request(
                 "GET",
                 "/rest/v1/kyc_information?kyc_status=eq.pending",
-                self.supabase.service_headers,  # CHANGED TO service_headers
+                headers=self.supabase.service_headers,
             )
             return response or []
         except Exception as e:
             logger.error(f"[KYC] Auto verify fetch error: {e}")
             return []
+
 
 kyc_service = KYCService()
