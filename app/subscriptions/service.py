@@ -101,7 +101,14 @@ class SubscriptionService:
         )
 
         self.log_event(user_id, package_id, "activated")
-        self.send_confirmation_email(user_id, pkg)
+        
+        # Send confirmation email using the correct method
+        try:
+            self.send_confirmation_email(user_id, pkg)
+        except Exception as e:
+            print(f"Warning: Could not send confirmation email: {e}")
+            # Log the email failure but don't fail the subscription activation
+            self.log_event(user_id, package_id, "email_failed", {"error": str(e)})
 
         return {"success": True, "message": "Subscription activated", "data": saved_sub[0]}
 
@@ -321,34 +328,96 @@ class SubscriptionService:
         )
 
     # ---------------------------------------------------------
-    # Confirmation Email
+    # Confirmation Email - UPDATED to use correct email method
     # ---------------------------------------------------------
     def send_confirmation_email(self, user_id: str, pkg):
-        user = database_service.get_user_by_id(user_id)
-        if not user:
-            return
+        try:
+            # Get user info
+            user = None
+            
+            # Try database_service.get_user_by_id first
+            if hasattr(database_service, 'get_user_by_id'):
+                try:
+                    user = database_service.get_user_by_id(user_id)
+                except Exception as e:
+                    print(f"Error using database_service.get_user_by_id: {e}")
+            
+            # If that didn't work, try direct Supabase query
+            if not user:
+                user = self._get_user_by_id(user_id)
+            
+            if not user:
+                print(f"No user found for ID: {user_id}")
+                return
 
-        name = user["full_name"]
-        email = user["email"]
-        benefits = pkg.get("benefits", []) or []
+            name = user.get("full_name") or user.get("name") or "User"
+            email = user.get("email")
+            
+            if not email:
+                print(f"No email found for user {user_id}")
+                return
 
-        subject = f"Your {pkg['name']} Subscription is Active!"
+            # Get the next billing date (next Friday)
+            next_billing = get_next_friday()
+            next_billing_date = next_billing.strftime("%Y-%m-%d")
+            
+            # Format the amount
+            amount = f"R {pkg['price']}"
+            
+            # Determine billing cycle from period
+            billing_cycle = pkg.get("period", "Weekly")
+            
+            # Use the correct email method from email_service
+            success = email_service.send_subscription_confirmation_email(
+                email=email,
+                user_name=name,
+                plan_name=pkg['name'],
+                amount=amount,
+                billing_cycle=billing_cycle,
+                next_billing_date=next_billing_date
+            )
+            
+            if success:
+                print(f"Subscription confirmation email sent to {email}")
+                # Log successful email
+                self.log_event(user_id, pkg.get('id'), "email_sent", {
+                    "email": email,
+                    "plan": pkg['name']
+                })
+            else:
+                print(f"Failed to send subscription email to {email}")
+                # Log email failure
+                self.log_event(user_id, pkg.get('id'), "email_failed", {
+                    "email": email,
+                    "plan": pkg['name']
+                })
+                
+        except AttributeError as e:
+            # If email_service doesn't have send_subscription_confirmation_email
+            print(f"Email service error (missing method): {e}")
+            self.log_event(user_id, pkg.get('id', 'unknown'), "email_service_error", {
+                "error": "Missing email method",
+                "detail": str(e)
+            })
+        except Exception as e:
+            print(f"Unexpected error in send_confirmation_email: {e}")
+            self.log_event(user_id, pkg.get('id', 'unknown'), "email_error", {"error": str(e)})
 
-        body = f"""
-        <h2>Subscription Activated</h2>
-        <p>Hello {name},</p>
-        <p>You have successfully subscribed to <strong>{pkg['name']}</strong>.</p>
-        <p><strong>Weekly Price:</strong> R {pkg['price']}</p>
-        <p><strong>Next Billing:</strong> Coming Friday at Midnight</p>
-        <p><strong>Your Benefits:</strong></p>
-        <ul>{''.join(f'<li>{b}</li>' for b in benefits)}</ul>
-        """
-
-        email_service.send_email(
-            to=email,
-            subject=subject,
-            html_content=body,
-        )
+    # ---------------------------------------------------------
+    # Get User by ID (alternative method)
+    # ---------------------------------------------------------
+    def _get_user_by_id(self, user_id: str):
+        """Alternative method to get user if database_service.get_user_by_id doesn't work"""
+        try:
+            result = database_service.supabase.make_request(
+                method="GET",
+                endpoint=f"/rest/v1/users?id=eq.{user_id}",
+                headers=database_service.supabase.service_headers,
+            )
+            return result[0] if result else None
+        except Exception as e:
+            print(f"Error getting user by ID: {e}")
+            return None
 
 
 subscription_service = SubscriptionService()
