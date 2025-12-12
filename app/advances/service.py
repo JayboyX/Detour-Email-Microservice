@@ -170,6 +170,84 @@ class AdvancesService:
             "message": "Advance issued successfully",
             "advance": created[0]
         }
+    
+    # ------------------------------------------------------
+    # Get user advance summary (for wallet screen)
+    # ------------------------------------------------------
+    def get_user_advance_summary(self, user_id):
+        """Get summary of user's advance activity"""
+        try:
+            # Get all user advances (both active and repaid)
+            result = database_service.supabase.make_request(
+                "GET",
+                f"/rest/v1/user_advances?user_id=eq.{user_id}",
+                headers=database_service.supabase.anon_headers
+            )
+            
+            if not result:
+                return {
+                    "total_advanced": 0.0,
+                    "total_repaid": 0.0,
+                    "total_outstanding": 0.0,
+                    "advances_count": 0,
+                    "repaid_advances_count": 0,
+                    "active_advances_count": 0
+                }
+            
+            total_advanced = 0.0
+            total_repaid = 0.0
+            total_outstanding = 0.0
+            advances_count = len(result)
+            repaid_advances_count = 0
+            active_advances_count = 0
+            
+            for advance in result:
+                total_amount = float(advance["total_amount"])
+                outstanding_amount = float(advance["outstanding_amount"])
+                status = advance["status"]
+                
+                total_advanced += total_amount
+                total_repaid += (total_amount - outstanding_amount)
+                total_outstanding += outstanding_amount
+                
+                if status == "repaid":
+                    repaid_advances_count += 1
+                elif status == "active":
+                    active_advances_count += 1
+            
+            # Also get repayment history for accuracy
+            repayments_result = database_service.supabase.make_request(
+                "GET",
+                f"/rest/v1/advance_repayments?user_id=eq.{user_id}",
+                headers=database_service.supabase.anon_headers
+            )
+            
+            if repayments_result:
+                actual_total_repaid = sum(float(r["amount"]) for r in repayments_result)
+                # Use actual repayments if available
+                if actual_total_repaid > 0:
+                    total_repaid = actual_total_repaid
+                    total_outstanding = total_advanced - total_repaid
+            
+            return {
+                "total_advanced": round(total_advanced, 2),
+                "total_repaid": round(total_repaid, 2),
+                "total_outstanding": round(total_outstanding, 2),
+                "advances_count": advances_count,
+                "repaid_advances_count": repaid_advances_count,
+                "active_advances_count": active_advances_count
+            }
+            
+        except Exception as e:
+            print(f"[AdvanceSummary] Error: {e}")
+            return {
+                "total_advanced": 0.0,
+                "total_repaid": 0.0,
+                "total_outstanding": 0.0,
+                "advances_count": 0,
+                "repaid_advances_count": 0,
+                "active_advances_count": 0
+            }
 
     # ------------------------------------------------------
     # Weekly Automatic Repayment (FRIDAY CRON)

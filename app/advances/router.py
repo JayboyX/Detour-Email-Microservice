@@ -59,3 +59,23 @@ async def auto_repay():
     """
     result = advances_service.auto_repay()
     return SuccessResponse(**result)
+
+# -----------------------------------------------------------
+# GET USER ADVANCE SUMMARY (for wallet screen)
+# -----------------------------------------------------------
+@router.get("/summary/{user_id}", response_model=SuccessResponse)
+async def get_user_advance_summary(user_id: str):
+    """
+    Retrieves the user's advance summary:
+    - total_advanced: Total amount user has borrowed
+    - total_repaid: Total amount user has repaid
+    - total_outstanding: Current outstanding balance
+    - counts: Number of advances, repaid, active
+    """
+    result = advances_service.get_user_advance_summary(user_id)
+    
+    return SuccessResponse(
+        success=True,
+        message="Advance summary retrieved",
+        data=result
+    )
